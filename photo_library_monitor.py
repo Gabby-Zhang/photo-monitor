@@ -166,7 +166,7 @@ async def scrape_imago(page: Page, query: str) -> list[dict]:
 # ── Scraper: Alamy ────────────────────────────────────────────────────────────
 
 async def scrape_alamy(page: Page, query: str) -> list[dict]:
-    url = f"https://www.alamy.com/search/imageresults.aspx?qt={quote(query)}&SortOrder=2"
+    url = f"https://www.alamy.com/stock-photo/{quote(query.replace(' ', '-'))}.html?sortBy=newest"
     try:
         await page.goto(url, timeout=25000, wait_until="domcontentloaded")
         await asyncio.sleep(5)
