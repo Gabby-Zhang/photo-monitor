@@ -1,0 +1,29 @@
+name: French Politics News Monitor
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 7am BST (summer) / 6am GMT (winter)
+    - cron: '0 16 * * *'  # 5pm BST (summer) / 4pm GMT (winter)
+  workflow_dispatch:       # manual trigger for testing
+
+jobs:
+  send-news:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install anthropic requests googlenewsdecoder
+
+      - name: Run news monitor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python news_monitor.py
