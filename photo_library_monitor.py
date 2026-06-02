@@ -55,12 +55,20 @@ PERSONS = {
     "Gabriel Attal": {
         "topic":   "photo-alert-gabriel",
         "queries": ["Gabriel Attal"],
+        "must_contain": ["attal"],          # title must include at least one of these
     },
     "Stéphane Séjourné": {
         "topic":   "photo-alert-stephane",
         "queries": ["Stéphane Séjourné", "Stephane Sejourne"],
+        "must_contain": ["séjourné", "sejourne", "sejourne"],
     },
 }
+
+def is_relevant(title: str, person: str) -> bool:
+    """Return True only if the image title contains the person's last name."""
+    keywords = PERSONS[person]["must_contain"]
+    t = title.lower()
+    return any(kw in t for kw in keywords)
 
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -348,59 +356,50 @@ async def run_checks(dry_run: bool, init_mode: bool):
             for query in cfg["queries"]:
                 log.info(f"── Checking: {query} ──")
 
+                def process(results, source):
+                    nonlocal total_new
+                    skipped = 0
+                    for item in results:
+                        if item["id"] not in seen_ids:
+                            seen_ids.add(item["id"])
+                            if not init_mode:
+                                if not is_relevant(item["title"], person):
+                                    skipped += 1
+                                    log.debug(f"  Skipped (no name match): [{source}] {item['title'][:60]}")
+                                    continue
+                                notify(person, source, item["title"], item["url"], dry_run)
+                                total_new += 1
+                    if skipped:
+                        log.info(f"  {source}: {skipped} filtered out (name not in title)")
+
                 # -- Getty (Playwright + Stealth) --
                 getty_results = await scrape_getty(page, query)
                 log.info(f"  Getty Images: {len(getty_results)} result(s)")
-                for item in getty_results:
-                    if item["id"] not in seen_ids:
-                        seen_ids.add(item["id"])
-                        if not init_mode:
-                            notify(person, "Getty Images", item["title"], item["url"], dry_run)
-                            total_new += 1
+                process(getty_results, "Getty Images")
                 await asyncio.sleep(3)
 
                 # -- Imago (Playwright) --
                 imago_results = await scrape_imago(page, query)
                 log.info(f"  Imago: {len(imago_results)} result(s)")
-                for item in imago_results:
-                    if item["id"] not in seen_ids:
-                        seen_ids.add(item["id"])
-                        if not init_mode:
-                            notify(person, "Imago Images", item["title"], item["url"], dry_run)
-                            total_new += 1
+                process(imago_results, "Imago Images")
                 await asyncio.sleep(3)
 
                 # -- Alamy (Playwright, may be rate-limited) --
                 alamy_results = await scrape_alamy(page, query)
                 log.info(f"  Alamy: {len(alamy_results)} result(s)")
-                for item in alamy_results:
-                    if item["id"] not in seen_ids:
-                        seen_ids.add(item["id"])
-                        if not init_mode:
-                            notify(person, "Alamy", item["title"], item["url"], dry_run)
-                            total_new += 1
+                process(alamy_results, "Alamy")
                 await asyncio.sleep(3)
 
                 # -- Flickr (RSS, no browser) --
                 flickr_results = scrape_flickr_reneweurope(query)
                 log.info(f"  Flickr RenewEurope: {len(flickr_results)} result(s)")
-                for item in flickr_results:
-                    if item["id"] not in seen_ids:
-                        seen_ids.add(item["id"])
-                        if not init_mode:
-                            notify(person, "Flickr RenewEurope", item["title"], item["url"], dry_run)
-                            total_new += 1
+                process(flickr_results, "Flickr RenewEurope")
 
                 # -- Getty API (optional) --
                 if GETTY_API_KEY:
-                    getty_results = scrape_getty_api(query)
-                    log.info(f"  Getty API: {len(getty_results)} result(s)")
-                    for item in getty_results:
-                        if item["id"] not in seen_ids:
-                            seen_ids.add(item["id"])
-                            if not init_mode:
-                                notify(person, "Getty Images", item["title"], item["url"], dry_run)
-                                total_new += 1
+                    getty_api_results = scrape_getty_api(query)
+                    log.info(f"  Getty API: {len(getty_api_results)} result(s)")
+                    process(getty_api_results, "Getty Images")
 
             seen[key] = list(seen_ids)
 
