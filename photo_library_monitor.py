@@ -1,0 +1,440 @@
+#!/usr/bin/env python3
+"""
+Photo library monitor for Gabriel Attal and Stéphane Séjourné.
+
+Sends push notifications via ntfy.sh when new images are found.
+
+Topics:
+  photo-alert-gabriel   → Gabriel Attal
+  photo-alert-stephane  → Stéphane Séjourné
+
+Sources:
+  - Imago Images        (Playwright + stealth)
+  - Alamy               (Playwright + stealth, may get rate-limited)
+  - Flickr RenewEurope  (RSS feed, always reliable)
+  - Getty Images        (requires free API key — set GETTY_API_KEY env var)
+
+Usage:
+  python3 photo_library_monitor.py          # normal run
+  python3 photo_library_monitor.py --init   # first run: seed seen list, no notifications
+  python3 photo_library_monitor.py --dry-run
+
+Setup:
+  pip3 install playwright playwright-stealth feedparser requests
+  python3 -m playwright install chromium
+"""
+
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import re
+import sys
+import argparse
+import time
+from pathlib import Path
+from urllib.parse import quote
+
+import requests
+import feedparser
+from playwright.async_api import async_playwright, Page
+from playwright_stealth import Stealth
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+BASE_DIR  = Path(__file__).parent
+SEEN_FILE = BASE_DIR / "photo_library_seen.json"
+LOG_FILE  = BASE_DIR / "photo_library_monitor.log"
+NTFY_BASE = "https://ntfy.sh"
+
+# Optional: set this env var to enable Getty Images API
+GETTY_API_KEY = os.environ.get("GETTY_API_KEY", "")
+
+PERSONS = {
+    "Gabriel Attal": {
+        "topic":   "photo-alert-gabriel",
+        "queries": ["Gabriel Attal"],
+    },
+    "Stéphane Séjourné": {
+        "topic":   "photo-alert-stephane",
+        "queries": ["Stéphane Séjourné", "Stephane Sejourne"],
+    },
+}
+
+UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(LOG_FILE),
+    ],
+)
+log = logging.getLogger(__name__)
+
+# ── State ─────────────────────────────────────────────────────────────────────
+
+def load_seen() -> dict:
+    if SEEN_FILE.exists():
+        try:
+            return json.loads(SEEN_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+def save_seen(seen: dict):
+    SEEN_FILE.write_text(json.dumps(seen, indent=2, ensure_ascii=False))
+
+def make_id(*parts) -> str:
+    return hashlib.md5("|".join(str(p) for p in parts).encode()).hexdigest()[:16]
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+
+def notify(person: str, source: str, title: str, url: str, dry_run: bool):
+    if dry_run:
+        log.info(f"[DRY-RUN] {person} | {source} | {title[:60]} | {url}")
+        return
+    topic = PERSONS[person]["topic"]
+    log.info(f"NEW → {person} | {source} | {title[:60]}")
+    try:
+        safe_title = f"New photo: {person}".encode("ascii", "ignore").decode()
+        requests.post(
+            f"{NTFY_BASE}/{topic}",
+            data=f"[{source}] {title}".encode("utf-8"),
+            headers={
+                "Title":    safe_title,
+                "Tags":     "camera",
+                "Click":    url,
+                "Priority": "default",
+            },
+            timeout=10,
+        ).raise_for_status()
+    except Exception as e:
+        log.warning(f"ntfy error: {e}")
+
+# ── Scraper: Imago Images ─────────────────────────────────────────────────────
+
+async def scrape_imago(page: Page, query: str) -> list[dict]:
+    url = f"https://www.imago-images.com/search?q={quote(query)}"
+    try:
+        await page.goto(url, timeout=25000, wait_until="domcontentloaded")
+        await asyncio.sleep(4)
+        # Imago individual images use /st/XXXXXXXXX URL pattern
+        links = await page.query_selector_all("a[href*='/st/']")
+        results = []
+        seen_hrefs: set = set()
+        for link in links[:20]:
+            href = await link.get_attribute("href") or ""
+            if not href or href in seen_hrefs:
+                continue
+            # Skip non-image links (searchID param only links are category links)
+            if "searchID" not in href and "/st/" not in href:
+                continue
+            seen_hrefs.add(href)
+            # Get image title from alt text or nearby text
+            img = await link.query_selector("img")
+            alt = (await img.get_attribute("alt") or "").strip() if img else ""
+            title = alt or query
+            full = f"https://www.imago-images.com{href}" if href.startswith("/") else href
+            # Strip searchID tracking param for cleaner ID
+            clean_href = href.split("?")[0]
+            results.append({
+                "id":    make_id("imago", clean_href),
+                "title": title,
+                "url":   full,
+            })
+        return results
+    except Exception as e:
+        log.warning(f"Imago error for '{query}': {e}")
+        return []
+
+# ── Scraper: Alamy ────────────────────────────────────────────────────────────
+
+async def scrape_alamy(page: Page, query: str) -> list[dict]:
+    url = f"https://www.alamy.com/search/imageresults.aspx?qt={quote(query)}&SortOrder=2"
+    try:
+        await page.goto(url, timeout=25000, wait_until="domcontentloaded")
+        await asyncio.sleep(5)
+        # Check if we got blocked
+        title = await page.title()
+        if "403" in title or "forbidden" in title.lower() or "captcha" in title.lower():
+            log.warning(f"Alamy blocked (403/captcha) for '{query}'")
+            return []
+
+        html = await page.content()
+        # Alamy individual image URLs have long slugs + image ID
+        # Pattern: /stock-photo/some-long-title-IMAGEID.html
+        hrefs = re.findall(
+            r'href="(/stock-photo/[^"]{40,}\.html[^"]*)"',
+            html,
+        )
+        results = []
+        seen: set = set()
+        for href in hrefs[:20]:
+            if href in seen:
+                continue
+            seen.add(href)
+            # Try to get alt text
+            full = f"https://www.alamy.com{href}"
+            # Extract a title from the slug itself
+            slug = href.split("/stock-photo/")[-1].split(".html")[0]
+            title = slug.replace("-", " ").replace("%20", " ").title()
+            results.append({
+                "id":    make_id("alamy", href.split("?")[0]),
+                "title": title[:80],
+                "url":   full,
+            })
+        return results
+    except Exception as e:
+        log.warning(f"Alamy error for '{query}': {e}")
+        return []
+
+# ── Scraper: Flickr RenewEurope ───────────────────────────────────────────────
+
+def scrape_flickr_reneweurope(query: str) -> list[dict]:
+    """RSS feed — no browser needed, always reliable."""
+    feed_url = "https://www.flickr.com/photos/reneweuropegroup/feed/"
+    try:
+        feed = feedparser.parse(feed_url)
+        q_lower = query.lower()
+        results = []
+        for entry in feed.entries[:30]:
+            title   = entry.get("title", "")
+            summary = entry.get("summary", "")
+            if q_lower in title.lower() or q_lower in summary.lower():
+                link = entry.get("link", "")
+                results.append({
+                    "id":    make_id("flickr", link),
+                    "title": title,
+                    "url":   link,
+                })
+        return results
+    except Exception as e:
+        log.warning(f"Flickr error for '{query}': {e}")
+        return []
+
+# ── Scraper: Getty Images (Playwright + Stealth) ──────────────────────────────
+
+async def scrape_getty(page: Page, query: str) -> list[dict]:
+    """Getty Images editorial search via stealth browser."""
+    encoded = quote(query)
+    url = f"https://www.gettyimages.co.uk/search/2/image?family=editorial&groupbyevent=false&phrase={encoded}&sort=newest"
+    try:
+        await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+        await asyncio.sleep(6)
+
+        # Check for bot-wall redirect
+        current_url = page.url
+        if "bot-wall" in current_url or "captcha" in current_url:
+            log.warning(f"Getty: bot-wall detected for '{query}'")
+            return []
+
+        html = await page.content()
+
+        # Getty image detail links look like /detail/news-photo/XXXXXXXXX
+        hrefs = re.findall(r'"(/detail/[^"]{10,})"', html)
+        # Also try anchor tags
+        links = await page.query_selector_all("a[href*='/detail/']")
+
+        results = []
+        seen_hrefs: set = set()
+
+        for link in links[:20]:
+            href = await link.get_attribute("href") or ""
+            if not href or href in seen_hrefs:
+                continue
+            if "/detail/" not in href:
+                continue
+            seen_hrefs.add(href)
+            img = await link.query_selector("img")
+            alt = (await img.get_attribute("alt") or "").strip() if img else ""
+            title = alt or query
+            full = f"https://www.gettyimages.co.uk{href}" if href.startswith("/") else href
+            results.append({
+                "id":    make_id("getty", href.split("?")[0]),
+                "title": title,
+                "url":   full,
+            })
+
+        # Fallback: parse hrefs from raw HTML
+        if not results:
+            for href in hrefs[:20]:
+                if href in seen_hrefs:
+                    continue
+                seen_hrefs.add(href)
+                slug = href.split("/detail/")[-1].split("?")[0]
+                title = slug.replace("-", " ").replace("news-photo/", "").title()[:80]
+                full = f"https://www.gettyimages.co.uk{href}"
+                results.append({
+                    "id":    make_id("getty", href),
+                    "title": title,
+                    "url":   full,
+                })
+
+        return results
+    except Exception as e:
+        log.warning(f"Getty error for '{query}': {e}")
+        return []
+
+
+# ── Scraper: Getty Images API (optional) ──────────────────────────────────────
+
+def scrape_getty_api(query: str) -> list[dict]:
+    """Requires GETTY_API_KEY env var (paid Getty account)."""
+    if not GETTY_API_KEY:
+        return []
+    try:
+        resp = requests.get(
+            "https://api.gettyimages.com/v3/search/images/editorial",
+            params={
+                "phrase":        query,
+                "sort_order":    "newest",
+                "page_size":     20,
+                "editorial_segments": "news",
+            },
+            headers={
+                "Api-Key":      GETTY_API_KEY,
+                "Accept":       "application/json",
+                "User-Agent":   UA,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = []
+        for img in data.get("images", []):
+            img_id   = img.get("id", "")
+            title    = img.get("title", query)
+            url      = f"https://www.gettyimages.co.uk/detail/{img_id}"
+            results.append({
+                "id":    make_id("getty", img_id),
+                "title": title,
+                "url":   url,
+            })
+        return results
+    except Exception as e:
+        log.warning(f"Getty API error for '{query}': {e}")
+        return []
+
+# ── Orchestration ─────────────────────────────────────────────────────────────
+
+async def run_checks(dry_run: bool, init_mode: bool):
+    seen = load_seen()
+    total_new = 0
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=False)  # non-headless: bypasses Getty bot-wall
+        ctx = await browser.new_context(
+            user_agent=UA,
+            locale="fr-FR",
+            extra_http_headers={"Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8"},
+            viewport={"width": 1280, "height": 900},
+        )
+        page = await ctx.new_page()
+        await Stealth().apply_stealth_async(page)
+
+        for person, cfg in PERSONS.items():
+            key = person.replace(" ", "_")
+            seen_ids: set = set(seen.get(key, []))
+
+            for query in cfg["queries"]:
+                log.info(f"── Checking: {query} ──")
+
+                # -- Getty (Playwright + Stealth) --
+                getty_results = await scrape_getty(page, query)
+                log.info(f"  Getty Images: {len(getty_results)} result(s)")
+                for item in getty_results:
+                    if item["id"] not in seen_ids:
+                        seen_ids.add(item["id"])
+                        if not init_mode:
+                            notify(person, "Getty Images", item["title"], item["url"], dry_run)
+                            total_new += 1
+                await asyncio.sleep(3)
+
+                # -- Imago (Playwright) --
+                imago_results = await scrape_imago(page, query)
+                log.info(f"  Imago: {len(imago_results)} result(s)")
+                for item in imago_results:
+                    if item["id"] not in seen_ids:
+                        seen_ids.add(item["id"])
+                        if not init_mode:
+                            notify(person, "Imago Images", item["title"], item["url"], dry_run)
+                            total_new += 1
+                await asyncio.sleep(3)
+
+                # -- Alamy (Playwright, may be rate-limited) --
+                alamy_results = await scrape_alamy(page, query)
+                log.info(f"  Alamy: {len(alamy_results)} result(s)")
+                for item in alamy_results:
+                    if item["id"] not in seen_ids:
+                        seen_ids.add(item["id"])
+                        if not init_mode:
+                            notify(person, "Alamy", item["title"], item["url"], dry_run)
+                            total_new += 1
+                await asyncio.sleep(3)
+
+                # -- Flickr (RSS, no browser) --
+                flickr_results = scrape_flickr_reneweurope(query)
+                log.info(f"  Flickr RenewEurope: {len(flickr_results)} result(s)")
+                for item in flickr_results:
+                    if item["id"] not in seen_ids:
+                        seen_ids.add(item["id"])
+                        if not init_mode:
+                            notify(person, "Flickr RenewEurope", item["title"], item["url"], dry_run)
+                            total_new += 1
+
+                # -- Getty API (optional) --
+                if GETTY_API_KEY:
+                    getty_results = scrape_getty_api(query)
+                    log.info(f"  Getty API: {len(getty_results)} result(s)")
+                    for item in getty_results:
+                        if item["id"] not in seen_ids:
+                            seen_ids.add(item["id"])
+                            if not init_mode:
+                                notify(person, "Getty Images", item["title"], item["url"], dry_run)
+                                total_new += 1
+
+            seen[key] = list(seen_ids)
+
+        await browser.close()
+
+    if not dry_run:
+        save_seen(seen)
+
+    if init_mode:
+        count = sum(len(v) for v in seen.values())
+        log.info(f"Init complete — seeded {count} item IDs (no notifications sent)")
+    else:
+        log.info(f"Done — {total_new} new item(s) found")
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="Photo library monitor — Attal & Séjourné")
+    parser.add_argument("--init",    action="store_true",
+                        help="Seed seen-list without sending notifications")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print new items without notifications or saving state")
+    args = parser.parse_args()
+
+    if args.init:
+        log.info("=== INIT MODE ===")
+    elif args.dry_run:
+        log.info("=== DRY-RUN MODE ===")
+    else:
+        log.info("=== Photo Library Monitor ===")
+
+    asyncio.run(run_checks(dry_run=args.dry_run, init_mode=args.init))
+
+
+if __name__ == "__main__":
+    main()
