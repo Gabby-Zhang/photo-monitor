@@ -124,27 +124,26 @@ def notify(person: str, source: str, title: str, url: str, dry_run: bool):
 
 async def scrape_imago(page: Page, query: str) -> list[dict]:
     url = f"https://www.imago-images.com/search?q={quote(query)}"
+    # Keywords that must appear in the image title/alt to be considered relevant
+    query_keywords = [w.lower() for w in query.split() if len(w) > 2]
     try:
         await page.goto(url, timeout=25000, wait_until="domcontentloaded")
         await asyncio.sleep(4)
-        # Imago individual images use /st/XXXXXXXXX URL pattern
         links = await page.query_selector_all("a[href*='/st/']")
         results = []
         seen_hrefs: set = set()
-        for link in links[:20]:
+        for link in links[:30]:
             href = await link.get_attribute("href") or ""
-            if not href or href in seen_hrefs:
-                continue
-            # Skip non-image links (searchID param only links are category links)
-            if "searchID" not in href and "/st/" not in href:
+            if not href or href in seen_hrefs or "/st/" not in href:
                 continue
             seen_hrefs.add(href)
-            # Get image title from alt text or nearby text
             img = await link.query_selector("img")
             alt = (await img.get_attribute("alt") or "").strip() if img else ""
+            # Only include if at least one keyword from the query appears in the title
+            if alt and not any(kw in alt.lower() for kw in query_keywords):
+                continue
             title = alt or query
             full = f"https://www.imago-images.com{href}" if href.startswith("/") else href
-            # Strip searchID tracking param for cleaner ID
             clean_href = href.split("?")[0]
             results.append({
                 "id":    make_id("imago", clean_href),
@@ -185,8 +184,9 @@ async def scrape_alamy(page: Page, query: str) -> list[dict]:
             # Try to get alt text
             full = f"https://www.alamy.com{href}"
             # Extract a title from the slug itself
+            from urllib.parse import unquote
             slug = href.split("/stock-photo/")[-1].split(".html")[0]
-            title = slug.replace("-", " ").replace("%20", " ").title()
+            title = unquote(slug).replace("-", " ").title()
             results.append({
                 "id":    make_id("alamy", href.split("?")[0]),
                 "title": title[:80],
