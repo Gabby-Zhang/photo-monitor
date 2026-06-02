@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 */3 * * *'   # every 3 hours
   workflow_dispatch:          # allow manual trigger from GitHub UI
+    inputs:
+      init_mode:
+        description: 'Run in init mode (seed cache, no notifications)'
+        required: false
+        default: 'false'
 
 jobs:
   monitor:
@@ -37,7 +42,11 @@ jobs:
         run: |
           Xvfb :99 -screen 0 1280x900x24 &
           sleep 2
-          python3 photo_library_monitor.py
+          if [ "${{ github.event.inputs.init_mode }}" = "true" ]; then
+            python3 photo_library_monitor.py --init
+          else
+            python3 photo_library_monitor.py
+          fi
 
       - name: Save seen-items
         uses: actions/cache/save@v4
