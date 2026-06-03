@@ -63,7 +63,7 @@ PERSONS = {
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
         },
     },
-    "Stéphane Séjourné": {
+    "Stephane Sejourne": {
         "topic":   "photo-alert-stephane",
         "queries": ["Stéphane Séjourné", "Stephane Sejourne"],
         "must_contain": ["séjourné", "sejourne"],
