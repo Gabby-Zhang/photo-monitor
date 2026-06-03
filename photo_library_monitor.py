@@ -55,12 +55,24 @@ PERSONS = {
     "Gabriel Attal": {
         "topic":   "photo-alert-gabriel",
         "queries": ["Gabriel Attal"],
-        "must_contain": ["attal"],          # title must include at least one of these
+        "must_contain": ["attal"],
+        "search_urls": {
+            "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=gabriel+attal&sort=newest",
+            "Imago Images":       "https://www.imago-images.com/search?q=Gabriel+Attal&sortby=date",
+            "Alamy":              "https://www.alamy.com/stock-photo/gabriel-attal.html?sortBy=newest",
+            "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
+        },
     },
     "Stéphane Séjourné": {
         "topic":   "photo-alert-stephane",
         "queries": ["Stéphane Séjourné", "Stephane Sejourne"],
-        "must_contain": ["séjourné", "sejourne", "sejourne"],
+        "must_contain": ["séjourné", "sejourne"],
+        "search_urls": {
+            "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
+            "Imago Images":       "https://www.imago-images.com/search?q=Stephane+Sejourne&sortby=date",
+            "Alamy":              "https://www.alamy.com/stock-photo/stephane-sejourne.html?sortBy=newest",
+            "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
+        },
     },
 }
 
@@ -106,21 +118,24 @@ def make_id(*parts) -> str:
 
 # ── Notifications ─────────────────────────────────────────────────────────────
 
-def notify(person: str, source: str, title: str, url: str, dry_run: bool):
+def notify(person: str, source: str, count: int, dry_run: bool):
+    """Send one notification per source with a link to the filtered search page."""
+    search_url = PERSONS[person]["search_urls"].get(source, "")
     if dry_run:
-        log.info(f"[DRY-RUN] {person} | {source} | {title[:60]} | {url}")
+        log.info(f"[DRY-RUN] {person} | {source} | {count} new photo(s) → {search_url}")
         return
     topic = PERSONS[person]["topic"]
-    log.info(f"NEW → {person} | {source} | {title[:60]}")
+    log.info(f"NOTIFY → {person} | {source} | {count} new photo(s)")
     try:
-        safe_title = f"New photo: {person}".encode("ascii", "ignore").decode()
+        safe_title = f"📸 {person}".encode("ascii", "replace").decode()
+        body = f"{source} 上有 {count} 张新图片"
         requests.post(
             f"{NTFY_BASE}/{topic}",
-            data=f"[{source}] {title}".encode("utf-8"),
+            data=body.encode("utf-8"),
             headers={
                 "Title":    safe_title,
                 "Tags":     "camera",
-                "Click":    url,
+                "Click":    search_url,
                 "Priority": "default",
             },
             timeout=10,
@@ -358,6 +373,7 @@ async def run_checks(dry_run: bool, init_mode: bool):
 
                 def process(results, source):
                     nonlocal total_new
+                    new_count = 0
                     skipped = 0
                     for item in results:
                         if item["id"] not in seen_ids:
@@ -365,10 +381,11 @@ async def run_checks(dry_run: bool, init_mode: bool):
                             if not init_mode:
                                 if not is_relevant(item["title"], person):
                                     skipped += 1
-                                    log.debug(f"  Skipped (no name match): [{source}] {item['title'][:60]}")
                                     continue
-                                notify(person, source, item["title"], item["url"], dry_run)
-                                total_new += 1
+                                new_count += 1
+                    if not init_mode and new_count > 0:
+                        notify(person, source, new_count, dry_run)
+                        total_new += new_count
                     if skipped:
                         log.info(f"  {source}: {skipped} filtered out (name not in title)")
 
