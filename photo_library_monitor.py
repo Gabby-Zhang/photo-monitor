@@ -127,16 +127,18 @@ def notify(person: str, source: str, count: int, dry_run: bool):
     topic = PERSONS[person]["topic"]
     log.info(f"NOTIFY → {person} | {source} | {count} new photo(s)")
     try:
+        import json as _json
         requests.post(
-            f"{NTFY_BASE}/{topic}",
-            json={
+            NTFY_BASE,
+            data=_json.dumps({
                 "topic":    topic,
                 "title":    f"📸 {person}",
                 "message":  f"{source} 上有 {count} 张新图片",
                 "tags":     ["camera"],
                 "click":    search_url,
                 "priority": "default",
-            },
+            }),
+            headers={"Content-Type": "application/json"},
             timeout=10,
         ).raise_for_status()
     except Exception as e:
