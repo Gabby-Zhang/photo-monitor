@@ -293,7 +293,8 @@ def scrape_eu_audiovisual(search_terms: list) -> list[dict]:
                 "pagesize": 100, "type": media_type,
             }
             docs = requests.get(AV_API, params=params, timeout=20).json().get("response", {}).get("docs", [])
-            for doc in docs:
+            seen_urls: set = set()
+        for doc in docs:
                 titles = doc.get("titles_json", {}) or {}
                 summary = doc.get("summary_json", {}) or {}
                 combined = unescape(" ".join(str(v) for v in list(titles.values()) + list(summary.values()))).lower()
@@ -302,9 +303,12 @@ def scrape_eu_audiovisual(search_terms: list) -> list[dict]:
                 ref = doc.get("ref", "")
                 base_ref = ref.split("/")[0]
                 url = f"{PORTAL_VIDEO}/{base_ref}" if media_type == "VIDEO" else f"{PORTAL_PHOTO}/{base_ref}"
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
                 title = clean_html(next(iter(titles.values()), ref))
                 results.append({
-                    "id":    make_id("eu_av", ref),
+                    "id":    make_id("eu_av", url),
                     "title": title,
                     "url":   url,
                 })
