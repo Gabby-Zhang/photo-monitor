@@ -132,7 +132,7 @@ def notify(person: str, source: str, count: int, dry_run: bool):
             NTFY_BASE,
             data=_json.dumps({
                 "topic":    topic,
-                "title":    f"📸 {person}",
+                "title":    f"New photo: {person}",
                 "message":  f"{source} 上有 {count} 张新图片",
                 "tags":     ["camera"],
                 "click":    search_url,
