@@ -124,6 +124,32 @@ def make_id(*parts) -> str:
 
 # ── Notifications ─────────────────────────────────────────────────────────────
 
+def notify_direct(person: str, source: str, title: str, url: str, dry_run: bool):
+    """Send one notification per item with a direct link to the specific photo."""
+    topic = PERSONS[person]["topic"]
+    if dry_run:
+        log.info(f"[DRY-RUN] {person} | {source} | {title[:60]} → {url}")
+        return
+    log.info(f"NOTIFY → {person} | {source} | {title[:60]}")
+    try:
+        import json as _json
+        requests.post(
+            NTFY_BASE,
+            data=_json.dumps({
+                "topic":    topic,
+                "title":    f"New photo: {person}",
+                "message":  f"[{source}] {title}",
+                "tags":     ["camera"],
+                "click":    url,
+                "priority": "default",
+            }),
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        ).raise_for_status()
+    except Exception as e:
+        log.warning(f"ntfy error: {e}")
+
+
 def notify(person: str, source: str, count: int, dry_run: bool):
     """Send one notification per source with a link to the filtered search page."""
     search_url = PERSONS[person]["search_urls"].get(source, "")
@@ -460,14 +486,13 @@ async def run_checks(dry_run: bool, init_mode: bool):
                 if eu_terms:
                     eu_results = scrape_eu_audiovisual(eu_terms)
                     log.info(f"  EU Audiovisual: {len(eu_results)} result(s)")
-                    eu_new = 0
                     for item in eu_results:
                         if item["id"] not in seen_ids:
                             seen_ids.add(item["id"])
-                            eu_new += 1
-                    if not init_mode and eu_new > 0:
-                        notify(person, "EU Audiovisual", eu_new, dry_run)
-                        total_new += eu_new
+                            if not init_mode:
+                                # Send individual notification with direct link
+                                notify_direct(person, "EU Audiovisual", item["title"], item["url"], dry_run)
+                                total_new += 1
 
                 # -- Getty API (optional) --
                 if GETTY_API_KEY:
