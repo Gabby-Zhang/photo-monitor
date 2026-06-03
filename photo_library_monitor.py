@@ -455,11 +455,19 @@ async def run_checks(dry_run: bool, init_mode: bool):
                 process(flickr_results, "Flickr RenewEurope")
 
                 # -- EU Audiovisual (Séjourné only, no browser needed) --
+                # API already filters by name — skip title filter here
                 eu_terms = cfg.get("eu_av_terms")
                 if eu_terms:
                     eu_results = scrape_eu_audiovisual(eu_terms)
                     log.info(f"  EU Audiovisual: {len(eu_results)} result(s)")
-                    process(eu_results, "EU Audiovisual")
+                    eu_new = 0
+                    for item in eu_results:
+                        if item["id"] not in seen_ids:
+                            seen_ids.add(item["id"])
+                            eu_new += 1
+                    if not init_mode and eu_new > 0:
+                        notify(person, "EU Audiovisual", eu_new, dry_run)
+                        total_new += eu_new
 
                 # -- Getty API (optional) --
                 if GETTY_API_KEY:
