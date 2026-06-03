@@ -40,6 +40,30 @@ import requests
 import feedparser
 from html import unescape
 
+# ── Supabase (optional) ───────────────────────────────────────────────────────
+try:
+    from supabase import create_client as _sb_create
+    _SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+    _SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    _sb = _sb_create(_SUPABASE_URL, _SUPABASE_KEY) if _SUPABASE_URL and _SUPABASE_KEY else None
+except Exception:
+    _sb = None
+
+def _push_alert(person: str, source: str, item: dict):
+    """Write new photo find to Supabase photo_alerts table."""
+    if not _sb:
+        return
+    try:
+        _sb.table("photo_alerts").upsert({
+            "id":     item.get("id", ""),
+            "person": person,
+            "source": source,
+            "title":  item.get("title", ""),
+            "url":    item.get("url") or item.get("href", ""),
+        }, on_conflict="id").execute()
+    except Exception as e:
+        log.warning(f"Supabase write failed: {e}")
+
 def clean_html(s: str) -> str:
     return re.sub(r"<[^>]+>", "", unescape(str(s))).strip()
 from playwright.async_api import async_playwright, Page
@@ -455,6 +479,7 @@ async def run_checks(dry_run: bool, init_mode: bool):
                                     skipped += 1
                                     continue
                                 new_count += 1
+                                _push_alert(person, source, item)
                     if not init_mode and new_count > 0:
                         notify(person, source, new_count, dry_run)
                         total_new += new_count
@@ -495,6 +520,7 @@ async def run_checks(dry_run: bool, init_mode: bool):
                             seen_ids.add(item["id"])
                             if not init_mode:
                                 notify_direct(person, "EU Audiovisual", item["title"], item["url"], dry_run)
+                                _push_alert(person, "EU Audiovisual", item)
                                 total_new += 1
 
                 # -- Getty API (optional) --
