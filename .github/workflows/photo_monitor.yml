@@ -40,6 +40,8 @@ jobs:
       - name: Run monitor (with virtual display)
         env:
           DISPLAY: ':99'
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           Xvfb :99 -screen 0 1280x900x24 &
           sleep 2
