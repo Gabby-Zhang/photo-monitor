@@ -252,11 +252,17 @@ async def scrape_alamy(page: Page, query: str) -> list[dict]:
             if href in seen:
                 continue
             seen.add(href)
-            # Try to get alt text
             full = f"https://www.alamy.com{href}"
-            # Extract a title from the slug itself
             from urllib.parse import unquote
             slug = href.split("/stock-photo/")[-1].split(".html")[0]
+            # Skip photos from before 2025 (year appears in slug, e.g. "-2024-")
+            import datetime
+            current_year = datetime.date.today().year
+            years_in_slug = re.findall(r'\b(20\d{2})\b', slug)
+            if years_in_slug:
+                photo_year = int(years_in_slug[-1])
+                if photo_year < current_year - 1:  # older than last year
+                    continue
             title = unquote(slug).replace("-", " ").title()
             results.append({
                 "id":    make_id("alamy", href.split("?")[0]),
