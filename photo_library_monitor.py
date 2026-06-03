@@ -127,7 +127,7 @@ def notify(person: str, source: str, count: int, dry_run: bool):
     topic = PERSONS[person]["topic"]
     log.info(f"NOTIFY → {person} | {source} | {count} new photo(s)")
     try:
-        safe_title = f"📸 {person}".encode("ascii", "replace").decode()
+        safe_title = f"📸 {person}"
         body = f"{source} 上有 {count} 张新图片"
         requests.post(
             f"{NTFY_BASE}/{topic}",
