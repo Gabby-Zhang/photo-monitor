@@ -232,48 +232,51 @@ async def scrape_imago(page: Page, query: str) -> list[dict]:
         log.warning(f"Imago error for '{query}': {e}")
         return []
 
-# ── Scraper: Alamy ────────────────────────────────────────────────────────────
+# ── Scraper: Alamy (JSON API — no browser needed) ────────────────────────────
 
-async def scrape_alamy(page: Page, query: str) -> list[dict]:
-    url = f"https://www.alamy.com/stock-photo/{quote(query.lower().replace(' ', '-'))}.html?sortBy=newest"
+def scrape_alamy(query: str) -> list[dict]:
+    """Alamy search via internal JSON API — sorted by DateTaken, recent only."""
+    import datetime
+    cutoff = datetime.date.today() - datetime.timedelta(days=180)  # last 6 months
     try:
-        await page.goto(url, timeout=25000, wait_until="domcontentloaded")
-        await asyncio.sleep(5)
-        # Check if we got blocked
-        title = await page.title()
-        if "403" in title or "forbidden" in title.lower() or "captcha" in title.lower():
-            log.warning(f"Alamy blocked (403/captcha) for '{query}'")
-            return []
-
-        html = await page.content()
-        # Alamy individual image URLs have long slugs + image ID
-        # Pattern: /stock-photo/some-long-title-IMAGEID.html
-        hrefs = re.findall(
-            r'href="(/stock-photo/[^"]{40,}\.html[^"]*)"',
-            html,
+        resp = requests.get(
+            "https://www.alamy.com/search-api/v2/search/",
+            params={
+                "qt":         query,
+                "sort":       "DateTaken:desc",
+                "langCode":   "en",
+                "geoLocations": "gb",
+                "pageNumber": 1,
+                "pageSize":   30,
+            },
+            headers={
+                "User-Agent": UA,
+                "Referer":    "https://www.alamy.com/",
+            },
+            timeout=15,
         )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
         results = []
-        seen: set = set()
-        for href in hrefs[:20]:
-            if href in seen:
+        for item in items:
+            ref  = item.get("altids", {}).get("ref", "")
+            uri  = item.get("uri", "")
+            cap  = item.get("caption", ref)
+            created = item.get("firstcreated", "")  # e.g. "2026-06-02T00:00:00.000Z"
+            # Skip photos older than cutoff
+            if created:
+                try:
+                    photo_date = datetime.date.fromisoformat(created[:10])
+                    if photo_date < cutoff:
+                        continue
+                except ValueError:
+                    pass
+            if not ref or not uri:
                 continue
-            seen.add(href)
-            full = f"https://www.alamy.com{href}"
-            from urllib.parse import unquote
-            slug = href.split("/stock-photo/")[-1].split(".html")[0]
-            # Skip photos from before 2025 (year appears in slug, e.g. "-2024-")
-            import datetime
-            current_year = datetime.date.today().year
-            years_in_slug = re.findall(r'\b(20\d{2})\b', slug)
-            if years_in_slug:
-                photo_year = int(years_in_slug[-1])
-                if photo_year < current_year - 1:  # older than last year
-                    continue
-            title = unquote(slug).replace("-", " ").title()
             results.append({
-                "id":    make_id("alamy", href.split("?")[0]),
-                "title": title[:80],
-                "url":   full,
+                "id":    make_id("alamy", ref),
+                "title": cap[:120],
+                "url":   uri,
             })
         return results
     except Exception as e:
@@ -549,7 +552,7 @@ async def run_checks(dry_run: bool, init_mode: bool):
                 await asyncio.sleep(3)
 
                 # -- Alamy (Playwright, may be rate-limited) --
-                alamy_results = await scrape_alamy(page, query)
+                alamy_results = scrape_alamy(query)
                 log.info(f"  Alamy: {len(alamy_results)} result(s)")
                 process(alamy_results, "Alamy")
                 await asyncio.sleep(3)
