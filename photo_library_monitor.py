@@ -490,10 +490,6 @@ async def run_checks(dry_run: bool, init_mode: bool):
                         if item["id"] not in seen_ids:
                             seen_ids.add(item["id"])
                             if not init_mode:
-                                # Only notify if Séjourné is in the title (not just summary)
-                                if not any(t in item["title"].lower() for t in eu_terms):
-                                    log.info(f"  EU Audiovisual: skipped (name not in title): {item['title'][:60]}")
-                                    continue
                                 notify_direct(person, "EU Audiovisual", item["title"], item["url"], dry_run)
                                 total_new += 1
 
