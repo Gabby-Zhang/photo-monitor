@@ -96,12 +96,14 @@ PERSONS = {
         "queries": ["Stéphane Séjourné", "Stephane Sejourne"],
         "must_contain": ["séjourné", "sejourne"],
         "eu_av_terms": ["séjourn", "sejourn"],
+        "ep_multimedia_person_id": 14399,
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
             "Imago Images":       "https://www.imago-images.com/search?q=Stephane+Sejourne&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/stephane-sejourne.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
             "EU Audiovisual":     "https://audiovisual.ec.europa.eu/en/search?mediaType=REPORTAGE&sortField=search_date&sortFieldDirection=desc&groupedGenres=NEWS",
+            "EP Multimedia":      "https://multimedia.europarl.europa.eu/en/search?tab=photos&person=14399&photoType=25&orderBy=newest&page=1",
         },
     },
 }
@@ -340,6 +342,55 @@ def scrape_eu_audiovisual(search_terms: list) -> list[dict]:
         log.warning(f"EU AV error: {e}")
     return results
 
+# ── Scraper: EP Multimedia Centre ────────────────────────────────────────────
+
+async def scrape_ep_multimedia(page: Page, person_id: int) -> list[dict]:
+    """EU Parliament Multimedia Centre — photos filtered by person ID."""
+    EP_BASE = "https://multimedia.europarl.europa.eu"
+    search_url = f"{EP_BASE}/en/search?tab=photos&person={person_id}&photoType=25&orderBy=newest&page=1&q="
+    results = []
+    next_data_holder = {}
+
+    async def on_response(resp):
+        if "_next/data" in resp.url and "search.json" in resp.url:
+            try:
+                next_data_holder["data"] = await resp.json()
+            except Exception:
+                pass
+
+    page.on("response", on_response)
+    try:
+        await page.goto(search_url, timeout=25000, wait_until="domcontentloaded")
+        await asyncio.sleep(6)
+
+        nd = next_data_holder.get("data")
+        if nd:
+            photos = (
+                nd.get("pageProps", {})
+                  .get("results", {})
+                  .get("photos", {})
+                  .get("content", [])
+            )
+            for item in photos[:20]:
+                bid = item.get("mediaBusinessId", "")
+                if not bid:
+                    continue
+                title = item.get("title", bid)
+                url   = f"{EP_BASE}/en/photoset/{bid}"
+                results.append({
+                    "id":    make_id("ep_multimedia", bid),
+                    "title": title,
+                    "url":   url,
+                })
+        else:
+            log.warning("EP Multimedia: no _next/data captured")
+    except Exception as e:
+        log.warning(f"EP Multimedia error: {e}")
+    finally:
+        page.remove_listener("response", on_response)
+
+    return results
+
 # ── Scraper: Getty Images (Playwright + Stealth) ──────────────────────────────
 
 async def scrape_getty(page: Page, query: str) -> list[dict]:
@@ -521,6 +572,18 @@ async def run_checks(dry_run: bool, init_mode: bool):
                             if not init_mode:
                                 notify_direct(person, "EU Audiovisual", item["title"], item["url"], dry_run)
                                 _push_alert(person, "EU Audiovisual", item)
+                                total_new += 1
+
+                # -- EP Multimedia Centre (Séjourné only, Playwright) --
+                ep_person_id = cfg.get("ep_multimedia_person_id")
+                if ep_person_id:
+                    ep_results = await scrape_ep_multimedia(page, ep_person_id)
+                    log.info(f"  EP Multimedia: {len(ep_results)} result(s)")
+                    for item in ep_results:
+                        if item["id"] not in seen_ids:
+                            seen_ids.add(item["id"])
+                            if not init_mode:
+                                notify_direct(person, "EP Multimedia", item["title"], item["url"], dry_run)
                                 total_new += 1
 
                 # -- Getty API (optional) --
