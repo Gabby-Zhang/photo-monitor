@@ -150,13 +150,19 @@ def make_id(*parts) -> str:
 
 # ── Notifications ─────────────────────────────────────────────────────────────
 
+def _ascii(s: str) -> str:
+    """Convert accented characters to ASCII equivalents for HTTP headers."""
+    import unicodedata
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+
+
 def _ntfy_post(topic: str, title: str, message: str, click: str):
     """Send an ntfy notification using HTTP headers (avoids JSON body issues)."""
     requests.post(
         f"{NTFY_BASE}/{topic}",
         data=message.encode("utf-8"),
         headers={
-            "Title":    title,
+            "Title":    _ascii(title),   # HTTP headers must be ASCII
             "Tags":     "camera",
             "Click":    click,
             "Priority": "default",
