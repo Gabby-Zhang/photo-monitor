@@ -148,6 +148,21 @@ def make_id(*parts) -> str:
 
 # ── Notifications ─────────────────────────────────────────────────────────────
 
+def _ntfy_post(topic: str, title: str, message: str, click: str):
+    """Send an ntfy notification using HTTP headers (avoids JSON body issues)."""
+    requests.post(
+        f"{NTFY_BASE}/{topic}",
+        data=message.encode("utf-8"),
+        headers={
+            "Title":    title,
+            "Tags":     "camera",
+            "Click":    click,
+            "Priority": "default",
+        },
+        timeout=10,
+    ).raise_for_status()
+
+
 def notify_direct(person: str, source: str, title: str, url: str, dry_run: bool):
     """Send one notification per item with a direct link to the specific photo."""
     topic = PERSONS[person]["topic"]
@@ -156,20 +171,7 @@ def notify_direct(person: str, source: str, title: str, url: str, dry_run: bool)
         return
     log.info(f"NOTIFY → {person} | {source} | {title[:60]}")
     try:
-        import json as _json
-        requests.post(
-            NTFY_BASE,
-            data=_json.dumps({
-                "topic":    topic,
-                "title":    f"New photo: {person}",
-                "message":  f"[{source}] {title}",
-                "tags":     ["camera"],
-                "click":    url,
-                "priority": "default",
-            }),
-            headers={"Content-Type": "application/json"},
-            timeout=10,
-        ).raise_for_status()
+        _ntfy_post(topic, f"New photo: {person}", f"[{source}] {title}", url)
     except Exception as e:
         log.warning(f"ntfy error: {e}")
 
@@ -183,20 +185,7 @@ def notify(person: str, source: str, count: int, dry_run: bool):
     topic = PERSONS[person]["topic"]
     log.info(f"NOTIFY → {person} | {source} | {count} new photo(s)")
     try:
-        import json as _json
-        requests.post(
-            NTFY_BASE,
-            data=_json.dumps({
-                "topic":    topic,
-                "title":    f"New photo: {person}",
-                "message":  f"{source} 上有 {count} 张新图片",
-                "tags":     ["camera"],
-                "click":    search_url,
-                "priority": "default",
-            }),
-            headers={"Content-Type": "application/json"},
-            timeout=10,
-        ).raise_for_status()
+        _ntfy_post(topic, f"New photo: {person}", f"{source} 上有 {count} 张新图片", search_url)
     except Exception as e:
         log.warning(f"ntfy error: {e}")
 
