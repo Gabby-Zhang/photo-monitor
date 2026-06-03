@@ -38,6 +38,10 @@ from urllib.parse import quote
 
 import requests
 import feedparser
+from html import unescape
+
+def clean_html(s: str) -> str:
+    return re.sub(r"<[^>]+>", "", unescape(str(s))).strip()
 from playwright.async_api import async_playwright, Page
 from playwright_stealth import Stealth
 
@@ -67,11 +71,13 @@ PERSONS = {
         "topic":   "photo-alert-stephane",
         "queries": ["Stéphane Séjourné", "Stephane Sejourne"],
         "must_contain": ["séjourné", "sejourne"],
+        "eu_av_terms": ["séjourn", "sejourn"],
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
             "Imago Images":       "https://www.imago-images.com/search?q=Stephane+Sejourne&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/stephane-sejourne.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
+            "EU Audiovisual":     "https://audiovisual.ec.europa.eu/en/search?mediaType=REPORTAGE&sortField=search_date&sortFieldDirection=desc&groupedGenres=NEWS",
         },
     },
 }
@@ -245,6 +251,41 @@ def scrape_flickr_reneweurope(query: str) -> list[dict]:
         log.warning(f"Flickr error for '{query}': {e}")
         return []
 
+# ── Scraper: EU Audiovisual Service ──────────────────────────────────────────
+
+def scrape_eu_audiovisual(search_terms: list) -> list[dict]:
+    """EU Audiovisual Service API — no browser needed."""
+    AV_API = "https://gfdwwnbuul.execute-api.eu-west-1.amazonaws.com/avsportal/avsportal"
+    PORTAL_PHOTO = "https://audiovisual.ec.europa.eu/en/media/photo"
+    PORTAL_VIDEO = "https://audiovisual.ec.europa.eu/en/media/video"
+    results = []
+    try:
+        for media_type in ["REPORTAGE", "PHOTO", "VIDEO"]:
+            params = {
+                "fl": "type,ref,titles_json,shootstartdate,summary_json",
+                "hasMedia": 1, "wt": "json", "index": 1,
+                "pagesize": 100, "type": media_type,
+            }
+            docs = requests.get(AV_API, params=params, timeout=20).json().get("response", {}).get("docs", [])
+            for doc in docs:
+                titles = doc.get("titles_json", {}) or {}
+                summary = doc.get("summary_json", {}) or {}
+                combined = unescape(" ".join(str(v) for v in list(titles.values()) + list(summary.values()))).lower()
+                if not any(t in combined for t in search_terms):
+                    continue
+                ref = doc.get("ref", "")
+                base_ref = ref.split("/")[0]
+                url = f"{PORTAL_VIDEO}/{base_ref}" if media_type == "VIDEO" else f"{PORTAL_PHOTO}/{base_ref}"
+                title = clean_html(next(iter(titles.values()), ref))
+                results.append({
+                    "id":    make_id("eu_av", ref),
+                    "title": title,
+                    "url":   url,
+                })
+    except Exception as e:
+        log.warning(f"EU AV error: {e}")
+    return results
+
 # ── Scraper: Getty Images (Playwright + Stealth) ──────────────────────────────
 
 async def scrape_getty(page: Page, query: str) -> list[dict]:
@@ -412,6 +453,13 @@ async def run_checks(dry_run: bool, init_mode: bool):
                 flickr_results = scrape_flickr_reneweurope(query)
                 log.info(f"  Flickr RenewEurope: {len(flickr_results)} result(s)")
                 process(flickr_results, "Flickr RenewEurope")
+
+                # -- EU Audiovisual (Séjourné only, no browser needed) --
+                eu_terms = cfg.get("eu_av_terms")
+                if eu_terms:
+                    eu_results = scrape_eu_audiovisual(eu_terms)
+                    log.info(f"  EU Audiovisual: {len(eu_results)} result(s)")
+                    process(eu_results, "EU Audiovisual")
 
                 # -- Getty API (optional) --
                 if GETTY_API_KEY:
