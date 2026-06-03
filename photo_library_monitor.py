@@ -91,7 +91,7 @@ PERSONS = {
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
         },
     },
-    "Stephane Sejourne": {
+    "Stéphane Séjourné": {
         "topic":   "photo-alert-stephane",
         "queries": ["Stéphane Séjourné", "Stephane Sejourne"],
         "must_contain": ["séjourné", "sejourne"],
@@ -309,7 +309,7 @@ def scrape_eu_audiovisual(search_terms: list) -> list[dict]:
             }
             docs = requests.get(AV_API, params=params, timeout=20).json().get("response", {}).get("docs", [])
             seen_urls: set = set()
-        for doc in docs:
+            for doc in docs:
                 titles = doc.get("titles_json", {}) or {}
                 summary = doc.get("summary_json", {}) or {}
                 combined = unescape(" ".join(str(v) for v in list(titles.values()) + list(summary.values()))).lower()
