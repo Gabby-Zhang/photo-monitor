@@ -93,13 +93,13 @@ PERSONS = {
     },
     "Stéphane Séjourné": {
         "topic":   "photo-alert-stephane",
-        "queries": ["Stéphane Séjourné", "Stephane Sejourne"],
+        "queries": ["Séjourné", "Stephane Sejourne"],
         "must_contain": ["séjourné", "sejourne"],
         "eu_av_terms": ["séjourn", "sejourn"],
         "ep_multimedia_person_id": 14399,
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
-            "Imago Images":       "https://www.imago-images.com/search?querystring=Stephane+Sejourne&category=all&sortby=date",
+            "Imago Images":       "https://www.imago-images.com/search?querystring=S%C3%A9journ%C3%A9&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/stephane-sejourne.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
             "EU Audiovisual":     "https://audiovisual.ec.europa.eu/en/search?mediaType=REPORTAGE&sortField=search_date&sortFieldDirection=desc&groupedGenres=NEWS",
