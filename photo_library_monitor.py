@@ -86,7 +86,7 @@ PERSONS = {
         "must_contain": ["attal"],
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=gabriel+attal&sort=newest",
-            "Imago Images":       "https://www.imago-images.com/search?q=Gabriel+Attal&sortby=date",
+            "Imago Images":       "https://www.imago-images.com/search?querystring=Gabriel+Attal&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/gabriel-attal.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
         },
@@ -99,7 +99,7 @@ PERSONS = {
         "ep_multimedia_person_id": 14399,
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
-            "Imago Images":       "https://www.imago-images.com/search?q=Stephane+Sejourne&sortby=date",
+            "Imago Images":       "https://www.imago-images.com/search?querystring=Stephane+Sejourne&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/stephane-sejourne.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
             "EU Audiovisual":     "https://audiovisual.ec.europa.eu/en/search?mediaType=REPORTAGE&sortField=search_date&sortFieldDirection=desc&groupedGenres=NEWS",
@@ -200,7 +200,7 @@ def notify(person: str, source: str, count: int, dry_run: bool):
 # ── Scraper: Imago Images ─────────────────────────────────────────────────────
 
 async def scrape_imago(page: Page, query: str) -> list[dict]:
-    url = f"https://www.imago-images.com/search?q={quote(query)}"
+    url = f"https://www.imago-images.com/search?querystring={quote(query)}&category=all&sortby=date"
     # Keywords that must appear in the image title/alt to be considered relevant
     query_keywords = [w.lower() for w in query.split() if len(w) > 2]
     try:
