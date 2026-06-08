@@ -310,36 +310,71 @@ def scrape_flickr_reneweurope(query: str) -> list[dict]:
 
 # ── Scraper: EU Audiovisual Service ──────────────────────────────────────────
 
+def _eu_av_scan_reportage_photos(api_url: str, base_ref: str, n_photos: int,
+                                  search_terms: list) -> bool:
+    """Fetch all individual photos for a reportage by enumerating refs in parallel.
+
+    Uses ThreadPoolExecutor to query each photo ref concurrently.
+    Returns True if any photo caption contains a search term.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def fetch_caption(photo_num: int):
+        ref = f"{base_ref}/00-{photo_num:02d}"
+        try:
+            r = requests.get(api_url, params={"fl": "summary_json", "wt": "json", "ref": ref},
+                             timeout=8)
+            docs = r.json().get("response", {}).get("docs", [])
+            if docs:
+                return unescape(str(docs[0].get("summary_json", "") or "")).lower()
+        except Exception:
+            pass
+        return ""
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(fetch_caption, i): i for i in range(1, n_photos + 1)}
+        for future in as_completed(futures):
+            caption = future.result()
+            if caption and any(t in caption for t in search_terms):
+                return True
+    return False
+
+
 def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
     """EU Audiovisual Service API — no browser needed.
 
-    Matches items where:
-      - person_id is provided and appears in pers_json (catches items where name isn't in title), OR
-      - any search_term appears in titles_json or summary_json (fallback keyword match)
+    Pass 1 — REPORTAGE / VIDEO / PHOTO (top 100 each):
+      Match by person_id in pers_json OR keywords in title/summary/caption.
+
+    Pass 2 — Photo caption scan for unmatched REPORTAGEs (top 20):
+      For reportages not matched in pass 1, fetch every individual photo ref in
+      parallel and check captions. Catches group events (e.g. weekly College
+      meetings) where individual photo captions name the person but the reportage
+      title/tags do not.
     """
     AV_API = "https://gfdwwnbuul.execute-api.eu-west-1.amazonaws.com/avsportal/avsportal"
     PORTAL_PHOTO = "https://audiovisual.ec.europa.eu/en/media/photo"
     PORTAL_VIDEO = "https://audiovisual.ec.europa.eu/en/media/video"
     results = []
+    matched_doc_refs: set = set()
     try:
+        # ── Pass 1: standard type queries ────────────────────────────────────
         for media_type in ["REPORTAGE", "PHOTO", "VIDEO"]:
             params = {
-                "fl": "type,ref,titles_json,shootstartdate,summary_json,pers_json",
+                "fl": "type,ref,doc_ref,titles_json,shootstartdate,summary_json,pers_json",
                 "hasMedia": 1, "wt": "json", "index": 1,
                 "pagesize": 100, "type": media_type,
             }
             docs = requests.get(AV_API, params=params, timeout=20).json().get("response", {}).get("docs", [])
-            seen_urls: set = set()
+            seen_refs: set = set()
             for doc in docs:
                 titles  = doc.get("titles_json", {}) or {}
                 summary = doc.get("summary_json", {}) or {}
                 pers    = doc.get("pers_json", []) or []
 
-                # Match by person ID (most reliable — works even if name not in title)
                 person_match = person_id and any(
                     str(p.get("id", "")) == str(person_id) for p in pers
                 )
-                # Fallback: keyword match in title/summary
                 combined = unescape(" ".join(str(v) for v in list(titles.values()) + list(summary.values()))).lower()
                 keyword_match = any(t in combined for t in search_terms)
 
@@ -347,17 +382,45 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
                     continue
 
                 ref = doc.get("ref", "")
-                base_ref = ref.split("/")[0]
-                url = f"{PORTAL_VIDEO}/{base_ref}" if media_type == "VIDEO" else f"{PORTAL_PHOTO}/{base_ref}"
-                if url in seen_urls:
+                doc_ref = doc.get("doc_ref") or ref.split("/")[0]
+                dedup_key = doc_ref if media_type == "PHOTO" else ref
+                if dedup_key in seen_refs:
                     continue
-                seen_urls.add(url)
+                seen_refs.add(dedup_key)
+                matched_doc_refs.add(doc_ref)
+
+                url = f"{PORTAL_VIDEO}/{doc_ref}" if media_type == "VIDEO" else f"{PORTAL_PHOTO}/{doc_ref}"
                 title = clean_html(next(iter(titles.values()), ref))
+                id_key = f"eu_av_photo|{doc_ref}" if media_type == "PHOTO" else ref
+                results.append({"id": make_id("eu_av", id_key), "title": title, "url": url})
+
+        # ── Pass 2: exhaustive per-photo caption scan for unmatched REPORTAGEs ─
+        rep_params = {
+            "fl": "ref,childobjects,titles_json",
+            "hasMedia": 1, "wt": "json", "index": 1,
+            "pagesize": 20, "type": "REPORTAGE",
+        }
+        reportages = requests.get(AV_API, params=rep_params, timeout=20).json().get("response", {}).get("docs", [])
+        for doc in reportages:
+            ref = doc.get("ref", "")
+            base_ref = ref.split("/")[0]
+            if base_ref in matched_doc_refs:
+                continue
+            n_photos = int(doc.get("childobjects") or 0)
+            if n_photos < 1:
+                continue
+            if _eu_av_scan_reportage_photos(AV_API, base_ref, n_photos, search_terms):
+                titles = doc.get("titles_json", {}) or {}
+                title = clean_html(next(iter(titles.values()), base_ref))
+                url = f"{PORTAL_PHOTO}/{base_ref}"
                 results.append({
-                    "id":    make_id("eu_av", ref),   # full ref (incl. variant) so REPORTAGE ≠ PHOTO
+                    "id":    make_id("eu_av", f"eu_av_scan|{base_ref}"),
                     "title": title,
                     "url":   url,
                 })
+                matched_doc_refs.add(base_ref)
+                log.info(f"  EU AV pass-2 match: {base_ref} ({title[:50]})")
+
     except Exception as e:
         log.warning(f"EU AV error: {e}")
     return results
