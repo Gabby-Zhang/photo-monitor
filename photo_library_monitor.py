@@ -338,7 +338,7 @@ def scrape_eu_audiovisual(search_terms: list) -> list[dict]:
                 seen_urls.add(url)
                 title = clean_html(next(iter(titles.values()), ref))
                 results.append({
-                    "id":    make_id("eu_av", url),
+                    "id":    make_id("eu_av", ref),   # use full ref (incl. variant) so REPORTAGE ≠ PHOTO
                     "title": title,
                     "url":   url,
                 })
