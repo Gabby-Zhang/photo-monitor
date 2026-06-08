@@ -96,6 +96,7 @@ PERSONS = {
         "queries": ["Séjourné", "Stephane Sejourne"],
         "must_contain": ["séjourné", "sejourne"],
         "eu_av_terms": ["séjourn", "sejourn"],
+        "eu_av_person_id": 241448,   # EU AV internal person ID for Stéphane Séjourné
         "ep_multimedia_person_id": 14399,
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
@@ -309,8 +310,13 @@ def scrape_flickr_reneweurope(query: str) -> list[dict]:
 
 # ── Scraper: EU Audiovisual Service ──────────────────────────────────────────
 
-def scrape_eu_audiovisual(search_terms: list) -> list[dict]:
-    """EU Audiovisual Service API — no browser needed."""
+def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
+    """EU Audiovisual Service API — no browser needed.
+
+    Matches items where:
+      - person_id is provided and appears in pers_json (catches items where name isn't in title), OR
+      - any search_term appears in titles_json or summary_json (fallback keyword match)
+    """
     AV_API = "https://gfdwwnbuul.execute-api.eu-west-1.amazonaws.com/avsportal/avsportal"
     PORTAL_PHOTO = "https://audiovisual.ec.europa.eu/en/media/photo"
     PORTAL_VIDEO = "https://audiovisual.ec.europa.eu/en/media/video"
@@ -318,18 +324,28 @@ def scrape_eu_audiovisual(search_terms: list) -> list[dict]:
     try:
         for media_type in ["REPORTAGE", "PHOTO", "VIDEO"]:
             params = {
-                "fl": "type,ref,titles_json,shootstartdate,summary_json",
+                "fl": "type,ref,titles_json,shootstartdate,summary_json,pers_json",
                 "hasMedia": 1, "wt": "json", "index": 1,
                 "pagesize": 100, "type": media_type,
             }
             docs = requests.get(AV_API, params=params, timeout=20).json().get("response", {}).get("docs", [])
             seen_urls: set = set()
             for doc in docs:
-                titles = doc.get("titles_json", {}) or {}
+                titles  = doc.get("titles_json", {}) or {}
                 summary = doc.get("summary_json", {}) or {}
+                pers    = doc.get("pers_json", []) or []
+
+                # Match by person ID (most reliable — works even if name not in title)
+                person_match = person_id and any(
+                    str(p.get("id", "")) == str(person_id) for p in pers
+                )
+                # Fallback: keyword match in title/summary
                 combined = unescape(" ".join(str(v) for v in list(titles.values()) + list(summary.values()))).lower()
-                if not any(t in combined for t in search_terms):
+                keyword_match = any(t in combined for t in search_terms)
+
+                if not person_match and not keyword_match:
                     continue
+
                 ref = doc.get("ref", "")
                 base_ref = ref.split("/")[0]
                 url = f"{PORTAL_VIDEO}/{base_ref}" if media_type == "VIDEO" else f"{PORTAL_PHOTO}/{base_ref}"
@@ -338,7 +354,7 @@ def scrape_eu_audiovisual(search_terms: list) -> list[dict]:
                 seen_urls.add(url)
                 title = clean_html(next(iter(titles.values()), ref))
                 results.append({
-                    "id":    make_id("eu_av", ref),   # use full ref (incl. variant) so REPORTAGE ≠ PHOTO
+                    "id":    make_id("eu_av", ref),   # full ref (incl. variant) so REPORTAGE ≠ PHOTO
                     "title": title,
                     "url":   url,
                 })
@@ -566,7 +582,7 @@ async def run_checks(dry_run: bool, init_mode: bool):
                 # API already filters by name — skip title filter here
                 eu_terms = cfg.get("eu_av_terms")
                 if eu_terms:
-                    eu_results = scrape_eu_audiovisual(eu_terms)
+                    eu_results = scrape_eu_audiovisual(eu_terms, person_id=cfg.get("eu_av_person_id"))
                     log.info(f"  EU Audiovisual: {len(eu_results)} result(s)")
                     for item in eu_results:
                         if item["id"] not in seen_ids:
