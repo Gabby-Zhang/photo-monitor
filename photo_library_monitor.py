@@ -605,13 +605,14 @@ async def run_checks(dry_run: bool, init_mode: bool):
                     skipped = 0
                     for item in results:
                         if item["id"] not in seen_ids:
-                            seen_ids.add(item["id"])
                             if not init_mode:
                                 if not is_relevant(item["title"], person):
                                     skipped += 1
+                                    seen_ids.add(item["id"])  # mark seen but don't notify
                                     continue
                                 new_count += 1
                                 _push_alert(person, source, item)
+                            seen_ids.add(item["id"])
                     if not init_mode and new_count > 0:
                         notify(person, source, new_count, dry_run)
                         total_new += new_count
