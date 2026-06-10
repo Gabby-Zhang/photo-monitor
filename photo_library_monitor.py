@@ -712,12 +712,23 @@ async def run_checks(dry_run: bool, init_mode: bool):
                             # Auto-download EU AV photos for Séjourné (local Mac only)
                             if source == "EU Audiovisual" and item.get("eu_av_base_ref") and not os.environ.get("GITHUB_ACTIONS"):
                                 eu_av_terms = cfg.get("eu_av_terms", [])
-                                eu_av_download_photos(
+                                n_dl = eu_av_download_photos(
                                     item["eu_av_base_ref"],
                                     eu_av_terms,
                                     shoot_date=item.get("eu_av_date", ""),
                                     title=item.get("title", ""),
                                 )
+                                if n_dl > 0 and not dry_run:
+                                    requests.post(
+                                        f"{NTFY_BASE}/{cfg['topic']}",
+                                        headers={
+                                            "Title": "📥 EU AV 照片已下载",
+                                            "Message": f"{n_dl} 张照片已保存到 ~/Pictures/Séjourné_EU_AV/\n{item.get('title', '')}",
+                                            "Priority": "low",
+                                            "Tags": "floppy_disk",
+                                        },
+                                        timeout=10,
+                                    )
                     if not init_mode and new_count > 0:
                         notify(person, source, new_count, dry_run)
                         total_new += new_count
