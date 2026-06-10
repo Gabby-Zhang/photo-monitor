@@ -605,15 +605,20 @@ async def run_checks(dry_run: bool, init_mode: bool):
                     new_count = 0
                     skipped = 0
                     for item in results:
-                        if item["id"] not in seen_ids:
-                            if not init_mode:
-                                if not item.get("confirmed_match") and not is_relevant(item["title"], person):
-                                    skipped += 1
-                                    seen_ids.add(item["id"])  # mark seen but don't notify
-                                    continue
-                                new_count += 1
-                                _push_alert(person, source, item)
+                        if item["id"] in seen_ids:
+                            continue
+                        if init_mode:
                             seen_ids.add(item["id"])
+                        else:
+                            # Only add to seen_ids AFTER sending notification.
+                            # If not relevant, skip silently this run (do NOT cache)
+                            # so we can re-evaluate if the title changes or we fix logic.
+                            if not item.get("confirmed_match") and not is_relevant(item["title"], person):
+                                skipped += 1
+                                continue
+                            _push_alert(person, source, item)
+                            seen_ids.add(item["id"])
+                            new_count += 1
                     if not init_mode and new_count > 0:
                         notify(person, source, new_count, dry_run)
                         total_new += new_count
