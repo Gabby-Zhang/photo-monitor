@@ -414,9 +414,10 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
                 title = clean_html(next(iter(titles.values()), base_ref))
                 url = f"{PORTAL_PHOTO}/{base_ref}"
                 results.append({
-                    "id":    make_id("eu_av", f"eu_av_scan|{base_ref}"),
-                    "title": title,
-                    "url":   url,
+                    "id":             make_id("eu_av", f"eu_av_scan|{base_ref}"),
+                    "title":          title,
+                    "url":            url,
+                    "confirmed_match": True,  # found via caption scan, skip title filter
                 })
                 matched_doc_refs.add(base_ref)
                 log.info(f"  EU AV pass-2 match: {base_ref} ({title[:50]})")
@@ -606,7 +607,7 @@ async def run_checks(dry_run: bool, init_mode: bool):
                     for item in results:
                         if item["id"] not in seen_ids:
                             if not init_mode:
-                                if not is_relevant(item["title"], person):
+                                if not item.get("confirmed_match") and not is_relevant(item["title"], person):
                                     skipped += 1
                                     seen_ids.add(item["id"])  # mark seen but don't notify
                                     continue
