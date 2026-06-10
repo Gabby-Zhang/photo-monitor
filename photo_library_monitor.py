@@ -76,6 +76,10 @@ SEEN_FILE = BASE_DIR / "photo_library_seen.json"
 LOG_FILE  = BASE_DIR / "photo_library_monitor.log"
 NTFY_BASE = "https://ntfy.sh"
 
+# EU AV auto-download config (only runs locally on Mac, not on GitHub Actions)
+EU_AV_CDN        = "https://ec.europa.eu/avservices/avs/files/video6/repository/prod/photo/store"
+EU_AV_DOWNLOAD_DIR = Path.home() / "Pictures" / "Séjourné_EU_AV"
+
 # Optional: set this env var to enable Getty Images API
 GETTY_API_KEY = os.environ.get("GETTY_API_KEY", "")
 
@@ -340,6 +344,86 @@ def _eu_av_scan_reportage_photos(api_url: str, base_ref: str, n_photos: int,
     return False
 
 
+def eu_av_download_photos(base_ref: str, search_terms: list, shoot_date: str = "", title: str = "") -> int:
+    """Download all SS photos from a reportage to ~/Pictures/Séjourné_EU_AV/.
+
+    Only runs locally (skipped on GitHub Actions where HOME is /home/runner).
+    Returns number of photos downloaded.
+    """
+    import platform
+    if os.environ.get("GITHUB_ACTIONS"):
+        return 0  # never run on CI
+
+    AV_API = "https://gfdwwnbuul.execute-api.eu-west-1.amazonaws.com/avsportal/avsportal"
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Build folder name: base_ref + date + sanitised title
+    date_str = shoot_date[:8] if shoot_date else ""
+    safe_title = re.sub(r"[^\w\s\-]", "", title)[:40].strip().replace(" ", "_")
+    folder_name = "_".join(filter(None, [base_ref.replace("/", "-"), date_str, safe_title]))
+    save_dir = EU_AV_DOWNLOAD_DIR / folder_name
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # First, get total number of photos in this reportage
+    try:
+        r = requests.get(AV_API, params={"fl": "childobjects", "wt": "json", "ref": f"{base_ref}/00-01"}, timeout=8)
+        # childobjects not on individual photos; query the reportage ref
+        r2 = requests.get(AV_API, params={"fl": "childobjects", "wt": "json", "ref": base_ref, "type": "REPORTAGE"}, timeout=8)
+        docs = r2.json().get("response", {}).get("docs", [])
+        n_photos = int((docs[0].get("childobjects") or 0) if docs else 0)
+        if n_photos == 0:
+            # fallback: scan until 404
+            n_photos = 99
+    except Exception:
+        n_photos = 99
+
+    downloaded = 0
+
+    def fetch_and_save(photo_num: int):
+        ref = f"{base_ref}/00-{photo_num:02d}"
+        filepath = save_dir / f"{base_ref.replace('/', '-')}_00-{photo_num:02d}.jpg"
+        if filepath.exists():
+            return 0  # already downloaded
+        try:
+            r = requests.get(AV_API, params={"fl": "summary_json,media_json", "wt": "json", "ref": ref}, timeout=8)
+            docs = r.json().get("response", {}).get("docs", [])
+            if not docs:
+                return -1  # no such photo
+            doc = docs[0]
+            caption = unescape(str(doc.get("summary_json", "") or "")).lower()
+            if not any(t in caption for t in search_terms):
+                return 0  # not SS photo
+            media = doc.get("media_json", {}) or {}
+            path = (media.get("ORIGINAL") or media.get("HIGH") or {}).get("PATH", "")
+            if not path:
+                return 0
+            img = requests.get(EU_AV_CDN + path, timeout=30, headers={"User-Agent": UA})
+            if img.status_code == 200 and img.headers.get("content-type", "").startswith("image"):
+                filepath.write_bytes(img.content)
+                return 1
+        except Exception as e:
+            log.debug(f"EU AV download {ref}: {e}")
+        return 0
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = [pool.submit(fetch_and_save, i) for i in range(1, n_photos + 1)]
+        missing_streak = 0
+        for future in futures:
+            result = future.result()
+            if result == -1:
+                missing_streak += 1
+                if missing_streak >= 3:
+                    break  # no more photos
+            else:
+                missing_streak = 0
+                if result == 1:
+                    downloaded += 1
+
+    if downloaded > 0:
+        log.info(f"  EU AV download: {downloaded} photo(s) → {save_dir}")
+    return downloaded
+
+
 def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
     """EU Audiovisual Service API — no browser needed.
 
@@ -392,7 +476,11 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
                 url = f"{PORTAL_VIDEO}/{doc_ref}" if media_type == "VIDEO" else f"{PORTAL_PHOTO}/{doc_ref}"
                 title = clean_html(next(iter(titles.values()), ref))
                 id_key = f"eu_av_photo|{doc_ref}" if media_type == "PHOTO" else ref
-                results.append({"id": make_id("eu_av", id_key), "title": title, "url": url})
+                results.append({
+                    "id": make_id("eu_av", id_key), "title": title, "url": url,
+                    "eu_av_base_ref": doc_ref,
+                    "eu_av_date": str(doc.get("shootstartdate", ""))[:8],
+                })
 
         # ── Pass 2: exhaustive per-photo caption scan for unmatched REPORTAGEs ─
         rep_params = {
@@ -414,10 +502,12 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
                 title = clean_html(next(iter(titles.values()), base_ref))
                 url = f"{PORTAL_PHOTO}/{base_ref}"
                 results.append({
-                    "id":             make_id("eu_av", f"eu_av_scan|{base_ref}"),
-                    "title":          title,
-                    "url":            url,
+                    "id":              make_id("eu_av", f"eu_av_scan|{base_ref}"),
+                    "title":           title,
+                    "url":             url,
                     "confirmed_match": True,  # found via caption scan, skip title filter
+                    "eu_av_base_ref":  base_ref,
+                    "eu_av_date":      str(doc.get("shootstartdate", ""))[:8],
                 })
                 matched_doc_refs.add(base_ref)
                 log.info(f"  EU AV pass-2 match: {base_ref} ({title[:50]})")
@@ -619,6 +709,15 @@ async def run_checks(dry_run: bool, init_mode: bool):
                             _push_alert(person, source, item)
                             seen_ids.add(item["id"])
                             new_count += 1
+                            # Auto-download EU AV photos for Séjourné (local Mac only)
+                            if source == "EU Audiovisual" and item.get("eu_av_base_ref") and not os.environ.get("GITHUB_ACTIONS"):
+                                eu_av_terms = cfg.get("eu_av_terms", [])
+                                eu_av_download_photos(
+                                    item["eu_av_base_ref"],
+                                    eu_av_terms,
+                                    shoot_date=item.get("eu_av_date", ""),
+                                    title=item.get("title", ""),
+                                )
                     if not init_mode and new_count > 0:
                         notify(person, source, new_count, dry_run)
                         total_new += new_count
