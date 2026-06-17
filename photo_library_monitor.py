@@ -278,9 +278,13 @@ def scrape_alamy(query: str) -> list[dict]:
                     pass
             if not ref or not uri:
                 continue
+            # Keep the FULL caption: Alamy captions lead with location/date/job
+            # title, and the person's name often sits past char 120. Truncating
+            # here before is_relevant() silently dropped real matches (e.g. nearly
+            # all Séjourné photos, whose name follows his long EU title). See git log.
             results.append({
                 "id":    make_id("alamy", ref),
-                "title": cap[:120],
+                "title": cap,
                 "url":   uri,
             })
         return results
