@@ -547,7 +547,7 @@ async def scrape_ep_multimedia(page: Page, person_id: int) -> list[dict]:
                   .get("photos", {})
                   .get("content", [])
             )
-            for item in photos[:20]:
+            for item in photos[:60]:  # raised from 20: plenary days produce large photosets
                 bid = item.get("mediaBusinessId", "")
                 if not bid:
                     continue
@@ -592,7 +592,7 @@ async def scrape_getty(page: Page, query: str) -> list[dict]:
         results = []
         seen_hrefs: set = set()
 
-        for link in links[:20]:
+        for link in links[:60]:  # raised from 20: busy event days (e.g. trade fairs) exceed 20 new photos between 3h runs
             href = await link.get_attribute("href") or ""
             if not href or href in seen_hrefs:
                 continue
@@ -616,7 +616,7 @@ async def scrape_getty(page: Page, query: str) -> list[dict]:
 
         # Fallback: parse hrefs from raw HTML
         if not results:
-            for href in hrefs[:20]:
+            for href in hrefs[:60]:
                 if href in seen_hrefs:
                     continue
                 seen_hrefs.add(href)
