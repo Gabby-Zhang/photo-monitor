@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 脚本 | 功能 | 通知渠道 |
 |---|---|---|
-| `news_monitor.py` | 按关键词搜两人新闻,用 Claude Haiku(API key,按量计费,不占 Pro 套餐)过滤摘要 | Telegram + Gmail |
+| ~~`news_monitor.py`~~ | **已搬到独立仓库** `~/Documents/GitHub/ssga-news-monitor`(Sonnet,纯邮件,见该仓库 CLAUDE.md);本目录不再有此脚本 | — |
 | `sejourn_photo_monitor.py` | 监控 EU Audiovisual Service 的 SS REPORTAGE / PHOTO / VIDEO（每类各取最新 100 条，客户端过滤），推 Markdown 日志到 GitHub | ntfy `ss-calendar-update` |
 | `photo_library_monitor.py` | 监控图库新照片：Imago、Alamy（JSON API）、Flickr RenewEurope（RSS）、Getty（Playwright+stealth）、EU AV（两轮扫描，见下文）、EP Multimedia（Playwright） | ntfy `photo-alert-gabriel` / `photo-alert-stephane` |
 | `sejourn_calendar_sync.py` | 抓 SS 的欧盟委员会官方日程,写入 Apple 日历,推送 ICS 到 GitHub | ntfy |
@@ -97,6 +97,11 @@ EU AV 自动下载仅本机运行（检测 `GITHUB_ACTIONS` env 跳过），下�
 
 - **通知顺序**：先发通知成功，再把 id 加进 seen 记录（顺序反了会漏通知，见 git log）。被 `is_relevant` 过滤掉的 item **不要**加进 seen——下次运行重新判断，否则修了过滤逻辑也永久补不了通知
 - **EU AV 结果不走 `process()`**：`run_checks` 里 EU AV / EP Multimedia 有各自独立的处理循环，改 `process()` 不影响它们（曾因此把下载触发写成死代码）
+- **标题截断导致 `is_relevant` 误删（重要）**：图说常以地点/日期/职务头衔开头，人名排在很后面。若拿被截断的标题去做 `is_relevant("attal"/"séjourné")` 匹配，会把真照片当无关丢掉。两种成因、两种修法：
+  - **Getty**：网站把缩略图 `alt` 截断在 ~147 字符，名字被切掉、且我们拿不到完整文字 → 信任搜索词（query 就是人名全称、服务端已过滤），给结果加 `confirmed_match: True` 跳过 `is_relevant`
+  - **Alamy**：完整图说在 API 里能拿到，是我们自己的 `cap[:120]` 把名字切了（Séjourné 曾 30 张漏 29 张）→ **不要截断**，存完整 caption 让 `is_relevant` 看到全名（比 confirmed_match 更精确，仍能挡掉真无关的）
+  - 新增源时先确认标题字段是否被截断、人名位置，避免重蹈
+- **单次抓取上限**：Getty / EP Multimedia 取前 60 条（原为 20）。大活动日（贸易展、全会）单天 30-50+ 张，3 小时跑一次时排在前 20 之后的会被挤掉漏掉。Getty 搜索页一次渲染约 60 张缩略图，故 60 有效；再多需翻页
 - **HTTP 头只能用 ASCII**：ntfy `Title:` 等头部不能含重音字符（如 `Séjourné`），用 `Sejourn` 代替
 - **EU 委员会网站 CDN**：从 GitHub 云端 IP 抓取时可能返回 0 条数据（延迟可达 4+ 小时）；云端 sync.py 用双源策略（网页 + ICS 文件），两处都要加 `"journ" in title.lower()` 过滤，否则会混入其他委员的活动
 - **Apple Calendar via AppleScript**：用临时 `.applescript` 文件 + `osascript file.applescript`，**不用** `-e` 参数（多行 script 会报错）；iCloud 日历无法用脚本创建，需用户手动建好
