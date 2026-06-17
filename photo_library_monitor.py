@@ -603,6 +603,11 @@ async def scrape_getty(page: Page, query: str) -> list[dict]:
                 "id":    make_id("getty", href.split("?")[0]),
                 "title": title,
                 "url":   full,
+                # Getty truncates alt text at ~147 chars; the person's name often
+                # falls past the cutoff (captions lead with job titles). The search
+                # phrase already filters by full name server-side, so trust it and
+                # skip the local title filter. See git log: missed 16/06 Attal batch.
+                "confirmed_match": True,
             })
 
         # Fallback: parse hrefs from raw HTML
@@ -618,6 +623,7 @@ async def scrape_getty(page: Page, query: str) -> list[dict]:
                     "id":    make_id("getty", href),
                     "title": title,
                     "url":   full,
+                    "confirmed_match": True,
                 })
 
         return results
