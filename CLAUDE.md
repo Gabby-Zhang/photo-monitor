@@ -26,6 +26,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 本地 `sejourn_calendar_sync.py` 仅手动运行(cron 已移除),负责写入 Apple 日历并推送 ICS 文件,**不推送 sync_state.json**（否则会与云端产生竞态条件导致 JSON 损坏）。
 
+**数据源（2026-06 改版后，三源合并去重 by `date|title`）**：
+1. **聚合学院日历页** — 不带任何委员过滤地抓全体，再用 `"journ" in title` 客户端筛。**绝不依赖他的 facet 选项**（见下方坑）。检测到 `?page=` 不推进就停。
+2. **Transparency Register 会议**（`meeting.do?host=<uuid>`）— 他本人 host `d8fba42d-…` + Cabinet host `21deeb50-…`。纯表格、实时，是聚合页分页坏掉期间唯一活的源；只覆盖「与利益相关方的会议」，不含理事会/演讲等。
+3. **仓库内 `sejourn.ics`** — 跨次运行保留历史。
+
+ICS 的 UID 用 `md5(date|title)` **确定性**生成（不能用 `hash()`，Python 字符串 hash 每进程加盐会让 UID 每次变 → 订阅端重复提醒）。通知按来源打标（🤝 会议 / 🏛 日程），且只对滚动窗口（`DAYS_BACK`）内的新事件推送，旧 backlog 静默入库。
+
 手机 webcal 订阅链接：`webcal://raw.githubusercontent.com/Gabby-Zhang/sejourn-calendar/main/sejourn.ics`
 
 ## 定时运行
@@ -93,6 +100,8 @@ GitHub Actions secrets 与上述同名。
 
 EU AV 自动下载仅本机运行（检测 `GITHUB_ACTIONS` env 跳过），下载到 `~/Pictures/Séjourné_EU_AV/{ref}_{date}_{title}/`，取 `media_json["ORIGINAL"].PATH` 最高规格，下载前校验 `content-type` 以 `image` 开头（CDN 可能返回 200 + HTML 假图）。
 
+**Renew Europe 群体活动（只通知不下载）**：`eu_av_terms` 含 `"renew europe"`，用于捕捉标题/摘要点名 Renew Europe 群组、但不含 Séjourné 本人名字的活动（如领导人会前会、欧理会前碰头，video 示例 `I-290823`）。这类只推通知，**不自动下载**：`run_checks` 里调 `eu_av_download_photos` 前会把 `"renew europe"` 从词表里剔除（`download_terms`），下载函数逐张扫 caption 找他名字，群体照片里没他名字自然下 0 张；他本人的照片照常下载。改 `eu_av_terms` 时注意保持这层「匹配词 ⊇ 下载词」的关系。
+
 ## 关键约定与已知坑
 
 - **通知顺序**：先发通知成功，再把 id 加进 seen 记录（顺序反了会漏通知，见 git log）。被 `is_relevant` 过滤掉的 item **不要**加进 seen——下次运行重新判断，否则修了过滤逻辑也永久补不了通知
@@ -103,7 +112,8 @@ EU AV 自动下载仅本机运行（检测 `GITHUB_ACTIONS` env 跳过），下�
   - 新增源时先确认标题字段是否被截断、人名位置，避免重蹈
 - **单次抓取上限**：Getty / EP Multimedia 取前 60 条（原为 20）。大活动日（贸易展、全会）单天 30-50+ 张，3 小时跑一次时排在前 20 之后的会被挤掉漏掉。Getty 搜索页一次渲染约 60 张缩略图，故 60 有效；再多需翻页
 - **HTTP 头只能用 ASCII**：ntfy `Title:` 等头部不能含重音字符（如 `Séjourné`），用 `Sejourn` 代替
-- **EU 委员会网站 CDN**：从 GitHub 云端 IP 抓取时可能返回 0 条数据（延迟可达 4+ 小时）；云端 sync.py 用双源策略（网页 + ICS 文件），两处都要加 `"journ" in title.lower()` 过滤，否则会混入其他委员的活动
+- **聚合日历页改版 = 委员 facet 已废（2026-06 起，重要）**：欧委会把学院日历页迁到 OpenEuropa List Pages，旧的 `?f[0]=commissioner_dynamic_commissioner_dynamic:…COM_…` 过滤参数被**完全忽略**（连官网自己的 “See all” 都失效），分页 `?page=` 也不推进、`Past` 状态筛选不生效——**整套 facet/分页当前对所有人都坏**。更坑的是 **Séjourné 直接从委员下拉里消失**（以前也出现过），所以**任何挂在「他的 filter / facet 选项」上的方案都是脆的**。对策：抓全体 + `"journ" in title` 客户端筛（filter-independent），并以 Transparency Register 作实时兜底。欧委会修好分页后聚合页源会自动恢复完整覆盖，无需改码。
+- **EU 委员会网站 CDN**：从 GitHub 云端 IP 抓取仍可能返回 0 条 / 延迟数小时；客户端名字筛选（`"journ" in title.lower()`）务必保留，否则会混入其他委员的活动
 - **Apple Calendar via AppleScript**：用临时 `.applescript` 文件 + `osascript file.applescript`，**不用** `-e` 参数（多行 script 会报错）；iCloud 日历无法用脚本创建，需用户手动建好
 - **Playwright 在 Linux CI**：需要 `Xvfb` 虚拟显示（`DISPLAY=:99`）和 `playwright install-deps chromium`
 - **改抓取过滤逻辑**：先用 `--dry-run` 对比改动前后命中差异再上线
