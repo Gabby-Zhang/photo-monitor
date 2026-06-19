@@ -129,6 +129,55 @@ def parse_events(soup: BeautifulSoup) -> list:
     return events
 
 
+# ── Cross-source dedup ──────────────────────────────────────────────────────────
+
+_TRANSPARENCY_PREFIXES = ("Séjourné Cabinet meets", "Séjourné meets")
+_DEDUP_STOPWORDS = {
+    "france", "paris", "french", "europe", "european", "union", "brussels",
+    "bruxelles", "national", "federation", "fédération", "chambers", "commerce",
+    "industry", "industrie", "minister", "ministre", "president", "président",
+    "groupe", "association", "company", "group",
+}
+
+
+def _is_transparency_style(title: str) -> bool:
+    return any(title.startswith(p) for p in _TRANSPARENCY_PREFIXES)
+
+
+def _org_signature(title: str) -> tuple:
+    t = title
+    for p in _TRANSPARENCY_PREFIXES:
+        if t.startswith(p):
+            t = t[len(p):].strip()
+            break
+    primary = t.split(" (")[0].strip().lower()
+    tokens = {
+        w for w in re.findall(r"[0-9a-zàâäéèêëîïôöùûüç]+", t.lower())
+        if len(w) >= 5 and w not in _DEDUP_STOPWORDS
+    }
+    return primary, tokens
+
+
+def drop_transparency_duplicates(events: list) -> list:
+    """Drop Transparency meetings that duplicate a same-day official agenda event."""
+    anchors_by_date = {}
+    for e in events:
+        if not _is_transparency_style(e["title"]):
+            anchors_by_date.setdefault(e["date"], []).append(e["title"].lower())
+    out = []
+    for e in events:
+        if _is_transparency_style(e["title"]):
+            primary, tokens = _org_signature(e["title"])
+            anchors = anchors_by_date.get(e["date"], [])
+            dup = (primary and any(primary in a for a in anchors)) or \
+                  any(tok in a for tok in tokens for a in anchors)
+            if dup:
+                print(f"  [dedup] drop Transparency dup: {e['date']} {e['title'][:50]}")
+                continue
+        out.append(e)
+    return out
+
+
 # ── Transparency Register source ────────────────────────────────────────────────
 
 def scrape_transparency(days_back: int) -> list:
@@ -241,13 +290,14 @@ def scrape_events(days_back: int = 7) -> list:
     reg = scrape_transparency(days_back)
     print(f"Transparency Register: {len(reg)} meetings in window.")
 
-    # Merge + dedup by (date, title).
+    # Merge + dedup by (date, title), then drop cross-source duplicates.
     seen, merged = set(), []
     for ev in all_events + reg:
         k = f"{ev['date']}|{ev['title']}"
         if k not in seen:
             seen.add(k)
             merged.append(ev)
+    merged = drop_transparency_duplicates(merged)
 
     print(f"Found {len(merged)} unique events in the last {days_back} days + upcoming.")
     return merged
