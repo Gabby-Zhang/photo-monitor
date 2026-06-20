@@ -31,6 +31,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 2. **Transparency Register 会议**（`meeting.do?host=<uuid>`）— 他本人 host `d8fba42d-…` + Cabinet host `21deeb50-…`。纯表格、实时，是聚合页分页坏掉期间唯一活的源；只覆盖「与利益相关方的会议」，不含理事会/演讲等。
 3. **仓库内 `sejourn.ics`** — 跨次运行保留历史。
 
+**跨源去重**:同一场会议会以两种标题出现——Transparency 版 `Séjourné meets <org>` 与官方议程版 `Executive Vice-President Séjourné meets Mr X … <org>`,`date|title` 抓不到。`drop_transparency_duplicates` 按「同日 + 机构名命中」把 Transparency 风格那条丢掉、保留更详细的议程版;**不分来源**(连已焙进旧 ICS 的重复也清)。改前先确认机构名匹配:先整段 `<org>`(去括号)子串匹配,再退化到 ≥5 字的去停用词 token(停用词表含 france/paris/european 等地理与泛称,防误杀)。档案馆「📆 行程日历」页实时解析这个 ICS、不入库,所以**改 ICS 即改档案馆**,无需动 Supabase。
+
 ICS 的 UID 用 `md5(date|title)` **确定性**生成（不能用 `hash()`，Python 字符串 hash 每进程加盐会让 UID 每次变 → 订阅端重复提醒）。通知按来源打标（🤝 会议 / 🏛 日程），且只对滚动窗口（`DAYS_BACK`）内的新事件推送，旧 backlog 静默入库。
 
 手机 webcal 订阅链接：`webcal://raw.githubusercontent.com/Gabby-Zhang/sejourn-calendar/main/sejourn.ics`
