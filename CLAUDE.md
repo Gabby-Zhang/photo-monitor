@@ -39,7 +39,7 @@ ICS 的 UID 用 `md5(date|title)` **确定性**生成（不能用 `hash()`，Pyt
 
 ## 定时运行
 
-- **GitHub Actions `photo_monitor.yml`** → `photo_library_monitor.py`，每 3 小时一次 + 周二/三 9am–4pm 布鲁塞尔时间每小时一次；支持 `init_mode` 手动触发
+- **GitHub Actions `photo_monitor.yml`** → `photo_library_monitor.py`，工作日 9:00–18:00 巴黎时间每小时一次，其余时段每 3 小时一次；支持 `init_mode` 手动触发。cron 写的是 UTC，按巴黎夏令时(CEST=UTC+2)映射(07:00–16:00 UTC)；冬令时(CET=UTC+1)会整体偏移一小时，需手动调
 - **GitHub Actions `welcome_email.yml`** → `welcome_email.py`，`subscribers.json` 有 push 时自动触发
 - **Mac launchd `com.sejourn.photo-monitor.plist`** → `sejourn_photo_monitor.py`，**工作日** 9:00–18:00 每整点
 - **Mac launchd `com.photomonitor.attal-sejourne.plist`** → `photo_library_monitor.py`，每 3 小时
