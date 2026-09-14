@@ -521,10 +521,32 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
 
 # ── Scraper: EP Multimedia Centre ────────────────────────────────────────────
 
-async def scrape_ep_multimedia(page: Page, person_id: int) -> list[dict]:
-    """EU Parliament Multimedia Centre — photos filtered by person ID."""
+async def scrape_ep_multimedia(page: Page, person_id: int, media: str = "photos") -> list[dict]:
+    """EU Parliament Multimedia Centre — photos OR videos filtered by person ID.
+
+    media="photos": search the photos tab (photoType=25 photosets).
+    media="videos": search the videos tab. EP publishes press conferences,
+      plenary/committee clips and interviews here that never appear as
+      photosets, so videos need their own pass — the photos tab silently
+      omits them (see git log: missed EP video of Séjourné).
+
+    Video landing-page URLs on EP carry a title slug that EP generates
+    inconsistently (accents sometimes transliterated, sometimes dropped), so
+    it can't be rebuilt reliably. Prefer a URL/slug field from the search JSON
+    when present; otherwise fall back to the ref-based canonical path, matching
+    the slug-less `/en/photoset/{bid}` convention used for photos.
+    """
     EP_BASE = "https://multimedia.europarl.europa.eu"
-    search_url = f"{EP_BASE}/en/search?tab=photos&person={person_id}&photoType=25&orderBy=newest&page=1&q="
+    if media == "videos":
+        search_url = f"{EP_BASE}/en/search?tab=videos&person={person_id}&orderBy=newest&page=1&q="
+        result_key = "videos"
+        path_seg   = "video"
+        id_prefix  = "ep_multimedia_video"
+    else:
+        search_url = f"{EP_BASE}/en/search?tab=photos&person={person_id}&photoType=25&orderBy=newest&page=1&q="
+        result_key = "photos"
+        path_seg   = "photoset"
+        id_prefix  = "ep_multimedia"
     results = []
     next_data_holder: dict = {}
 
@@ -541,27 +563,36 @@ async def scrape_ep_multimedia(page: Page, person_id: int) -> list[dict]:
         await asyncio.sleep(6)
         nd = next_data_holder.get("data")
         if nd:
-            photos = (
-                nd.get("pageProps", {})
-                  .get("results", {})
-                  .get("photos", {})
-                  .get("content", [])
-            )
-            for item in photos[:60]:  # raised from 20: plenary days produce large photosets
+            groups = nd.get("pageProps", {}).get("results", {}) or {}
+            content = (groups.get(result_key, {}) or {}).get("content", []) or []
+            # Fallback: if the active-tab key is empty/renamed, take the first
+            # non-empty media group in the response so a schema tweak on EP's
+            # side doesn't silently zero us out.
+            if not content:
+                for grp in groups.values():
+                    c = (grp or {}).get("content", []) if isinstance(grp, dict) else []
+                    if c:
+                        content = c
+                        break
+            for item in content[:60]:  # busy days (plenary weeks) produce large sets
                 bid = item.get("mediaBusinessId", "")
                 if not bid:
                     continue
                 title = item.get("title", bid)
-                url   = f"{EP_BASE}/en/photoset/{bid}"
+                raw_url = item.get("mediaUrl") or item.get("url") or item.get("slug") or ""
+                if raw_url:
+                    url = raw_url if raw_url.startswith("http") else f"{EP_BASE}{raw_url if raw_url.startswith('/') else '/' + raw_url}"
+                else:
+                    url = f"{EP_BASE}/en/{path_seg}/{bid}"
                 results.append({
-                    "id":    make_id("ep_multimedia", bid),
+                    "id":    make_id(id_prefix, bid),
                     "title": title,
                     "url":   url,
                 })
         else:
-            log.warning("EP Multimedia: no _next/data captured")
+            log.warning(f"EP Multimedia ({media}): no _next/data captured")
     except Exception as e:
-        log.warning(f"EP Multimedia error: {e}")
+        log.warning(f"EP Multimedia ({media}) error: {e}")
     finally:
         page.remove_listener("response", on_response)
     return results
@@ -780,16 +811,21 @@ async def run_checks(dry_run: bool, init_mode: bool):
                                             log.warning(f"download notify error: {e}")
 
                 # -- EP Multimedia Centre (Séjourné only, Playwright) --
+                # Two passes: photos AND videos. Videos (press conferences,
+                # plenary/committee clips, interviews) are only on the videos
+                # tab and were silently missed when we queried photos alone.
                 ep_person_id = cfg.get("ep_multimedia_person_id")
                 if ep_person_id:
-                    ep_results = await scrape_ep_multimedia(page, ep_person_id)
-                    log.info(f"  EP Multimedia: {len(ep_results)} result(s)")
-                    for item in ep_results:
-                        if item["id"] not in seen_ids:
-                            seen_ids.add(item["id"])
-                            if not init_mode:
-                                notify_direct(person, "EP Multimedia", item["title"], item["url"], dry_run)
-                                total_new += 1
+                    for ep_media in ("photos", "videos"):
+                        ep_results = await scrape_ep_multimedia(page, ep_person_id, media=ep_media)
+                        log.info(f"  EP Multimedia ({ep_media}): {len(ep_results)} result(s)")
+                        for item in ep_results:
+                            if item["id"] not in seen_ids:
+                                seen_ids.add(item["id"])
+                                if not init_mode:
+                                    src = "EP Multimedia" if ep_media == "photos" else "EP Multimedia (video)"
+                                    notify_direct(person, src, item["title"], item["url"], dry_run)
+                                    total_new += 1
 
                 # -- Getty API (optional) --
                 if GETTY_API_KEY:
