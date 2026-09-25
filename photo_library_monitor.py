@@ -13,6 +13,8 @@ Sources:
   - Alamy               (Playwright + stealth, may get rate-limited)
   - Flickr RenewEurope  (RSS feed, always reliable)
   - Getty Images        (requires free API key — set GETTY_API_KEY env var)
+  - Shutterstock Editorial (Playwright; Akamai often blocks datacenter IPs,
+                         so this mainly works on the Mac launchd run)
 
 Usage:
   python3 photo_library_monitor.py          # normal run
@@ -92,6 +94,7 @@ PERSONS = {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=gabriel+attal&sort=newest",
             "Imago Images":       "https://www.imago-images.com/search?querystring=Gabriel+Attal&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/gabriel-attal.html?sortBy=newest",
+            "Shutterstock Editorial": "https://www.shutterstock.com/editorial/search/gabriel-attal?sort=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
         },
     },
@@ -106,6 +109,7 @@ PERSONS = {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
             "Imago Images":       "https://www.imago-images.com/search?querystring=S%C3%A9journ%C3%A9&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/stephane-sejourne.html?sortBy=newest",
+            "Shutterstock Editorial": "https://www.shutterstock.com/editorial/search/stephane-sejourne?sort=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
             "EU Audiovisual":     "https://audiovisual.ec.europa.eu/en/search?mediaType=REPORTAGE&sortField=search_date&sortFieldDirection=desc&groupedGenres=NEWS",
             "EP Multimedia":      "https://multimedia.europarl.europa.eu/en/search?tab=photos&person=14399&photoType=25&orderBy=newest&page=1",
@@ -636,6 +640,55 @@ async def scrape_getty(page: Page, query: str) -> list[dict]:
         return []
 
 
+# ── Scraper: Shutterstock Editorial (Playwright + Stealth) ────────────────────
+
+async def scrape_shutterstock(page: Page, query: str) -> list[dict]:
+    """Shutterstock *Editorial* search (news photos live there, not in the main
+    stock search). Akamai frequently blocks datacenter IPs (GitHub Actions), so
+    a block is logged and returns [] instead of failing the run."""
+    slug = quote(_ascii(query).lower().strip().replace(" ", "-"))
+    url = f"https://www.shutterstock.com/editorial/search/{slug}?sort=newest"
+    try:
+        resp = await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+        await asyncio.sleep(6)
+        status = resp.status if resp else 0
+        page_title = (await page.title()) or ""
+        if status in (403, 429) or "access denied" in page_title.lower():
+            log.warning(f"Shutterstock: blocked (HTTP {status}, title '{page_title[:40]}') for '{query}'")
+            return []
+
+        links = await page.query_selector_all("a[href*='/editorial/image-editorial/']")
+        results = []
+        seen_imgs: set = set()
+        for link in links[:60]:
+            href = (await link.get_attribute("href") or "").split("?")[0]
+            # Detail URLs end with the image id, e.g. …-armed-14337612o
+            m = re.search(r"-(\d{6,}[a-z]*)/?$", href)
+            if not m or m.group(1) in seen_imgs:
+                continue
+            img_id = m.group(1)
+            seen_imgs.add(img_id)
+            img = await link.query_selector("img")
+            alt = (await img.get_attribute("alt") or "").strip() if img else ""
+            slug_text = href.rsplit("/", 1)[-1][: -len(img_id) - 1].replace("-", " ")
+            full = f"https://www.shutterstock.com{href}" if href.startswith("/") else href
+            results.append({
+                "id":    make_id("shutterstock", img_id),
+                "title": alt or slug_text or query,
+                "url":   full,
+                # Both alt text and URL slug are truncated captions (name may be
+                # cut off, cf. Getty); the search phrase is the full name, so
+                # trust the server-side match like Getty.
+                "confirmed_match": True,
+            })
+        if not results:
+            log.warning(f"Shutterstock: 0 links parsed for '{query}' (HTTP {status}, title '{page_title[:40]}')")
+        return results
+    except Exception as e:
+        log.warning(f"Shutterstock error for '{query}': {e}")
+        return []
+
+
 # ── Scraper: Getty Images API (optional) ──────────────────────────────────────
 
 def scrape_getty_api(query: str) -> list[dict]:
@@ -692,9 +745,15 @@ async def run_checks(dry_run: bool, init_mode: bool):
         page = await ctx.new_page()
         await Stealth().apply_stealth_async(page)
 
+        # Sources added after the seen file already exists: seed them silently on
+        # their first successful fetch, else the whole backlog notifies at once.
+        seeded_sources: set = set(seen.get("_seeded_sources", []))
+
         for person, cfg in PERSONS.items():
             key = person.replace(" ", "_")
             seen_ids: set = set(seen.get(key, []))
+            ss_key = f"{key}:Shutterstock"
+            ss_first = ss_key not in seeded_sources   # fixed per person, covers all queries
 
             for query in cfg["queries"]:
                 log.info(f"── Checking: {query} ──")
@@ -740,6 +799,19 @@ async def run_checks(dry_run: bool, init_mode: bool):
                 alamy_results = scrape_alamy(query)
                 log.info(f"  Alamy: {len(alamy_results)} result(s)")
                 process(alamy_results, "Alamy")
+                await asyncio.sleep(3)
+
+                # -- Shutterstock Editorial (Playwright, often blocked on CI) --
+                ss_results = await scrape_shutterstock(page, query)
+                log.info(f"  Shutterstock Editorial: {len(ss_results)} result(s)")
+                if ss_results and ss_first and not init_mode:
+                    seen_ids.update(i["id"] for i in ss_results)
+                    seeded_sources.add(ss_key)
+                    log.info(f"  Shutterstock Editorial: first fetch, seeded {len(ss_results)} id(s) silently")
+                else:
+                    if ss_results:
+                        seeded_sources.add(ss_key)
+                    process(ss_results, "Shutterstock Editorial")
                 await asyncio.sleep(3)
 
                 # -- Flickr (RSS, no browser) --
@@ -799,13 +871,14 @@ async def run_checks(dry_run: bool, init_mode: bool):
 
             seen[key] = list(seen_ids)
 
+        seen["_seeded_sources"] = sorted(seeded_sources)
         await browser.close()
 
     if not dry_run:
         save_seen(seen)
 
     if init_mode:
-        count = sum(len(v) for v in seen.values())
+        count = sum(len(v) for k, v in seen.items() if not k.startswith("_"))
         log.info(f"Init complete — seeded {count} item IDs (no notifications sent)")
     else:
         log.info(f"Done — {total_new} new item(s) found")

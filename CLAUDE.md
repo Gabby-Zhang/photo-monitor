@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |---|---|---|
 | ~~`news_monitor.py`~~ | **已搬到独立仓库** `~/Documents/GitHub/ssga-news-monitor`(Sonnet,纯邮件,见该仓库 CLAUDE.md);本目录不再有此脚本 | — |
 | `sejourn_photo_monitor.py` | 监控 EU Audiovisual Service 的 SS REPORTAGE / PHOTO / VIDEO（每类各取最新 100 条，客户端过滤），推 Markdown 日志到 GitHub | ntfy `ss-calendar-update` |
-| `photo_library_monitor.py` | 监控图库新照片：Imago、Alamy（JSON API）、Flickr RenewEurope（RSS）、Getty（Playwright+stealth）、EU AV（两轮扫描，见下文）、EP Multimedia（Playwright） | ntfy `photo-alert-gabriel` / `photo-alert-stephane` |
+| `photo_library_monitor.py` | 监控图库新照片：Imago、Alamy（JSON API）、Flickr RenewEurope（RSS）、Getty（Playwright+stealth）、Shutterstock Editorial（Playwright，见下文）、EU AV（两轮扫描，见下文）、EP Multimedia（Playwright） | ntfy `photo-alert-gabriel` / `photo-alert-stephane` |
 | `sejourn_calendar_sync.py` | 抓 SS 的欧盟委员会官方日程,写入 Apple 日历,推送 ICS 到 GitHub | ntfy |
 | `welcome_email.py` | 给 subscribers.json 里的订阅者发欢迎邮件 | Gmail |
 | `french_polls/` | 2027 大选民调:scrapers/(elabe、ifop、opinionway、wikipedia)→ polls.db → visualizer.py 出趋势图 | — |
@@ -112,6 +112,7 @@ EU AV 自动下载仅本机运行（检测 `GITHUB_ACTIONS` env 跳过），下�
   - **Getty**：网站把缩略图 `alt` 截断在 ~147 字符，名字被切掉、且我们拿不到完整文字 → 信任搜索词（query 就是人名全称、服务端已过滤），给结果加 `confirmed_match: True` 跳过 `is_relevant`
   - **Alamy**：完整图说在 API 里能拿到，是我们自己的 `cap[:120]` 把名字切了（Séjourné 曾 30 张漏 29 张）→ **不要截断**，存完整 caption 让 `is_relevant` 看到全名（比 confirmed_match 更精确，仍能挡掉真无关的）
   - 新增源时先确认标题字段是否被截断、人名位置，避免重蹈
+- **Shutterstock 只搜 Editorial 库**（`/editorial/search/<slug>`，新闻图不在主图库搜索里）。Akamai 常封数据中心 IP → GitHub Actions 上大概率返回 403 / "Access Denied"，只记 warning 返回空；**主要靠 Mac launchd（家庭 IP）那一路**。alt/URL slug 都是截断图说 → 同 Getty 用 `confirmed_match`。新源首次抓到结果时静默入 seen（`seen["_seeded_sources"]`），避免把 backlog 一次推出去
 - **单次抓取上限**：Getty / EP Multimedia 取前 60 条（原为 20）。大活动日（贸易展、全会）单天 30-50+ 张，3 小时跑一次时排在前 20 之后的会被挤掉漏掉。Getty 搜索页一次渲染约 60 张缩略图，故 60 有效；再多需翻页
 - **HTTP 头只能用 ASCII**：ntfy `Title:` 等头部不能含重音字符（如 `Séjourné`），用 `Sejourn` 代替
 - **聚合日历页改版 = 委员 facet 已废（2026-06 起，重要）**：欧委会把学院日历页迁到 OpenEuropa List Pages，旧的 `?f[0]=commissioner_dynamic_commissioner_dynamic:…COM_…` 过滤参数被**完全忽略**（连官网自己的 “See all” 都失效），分页 `?page=` 也不推进、`Past` 状态筛选不生效——**整套 facet/分页当前对所有人都坏**。更坑的是 **Séjourné 直接从委员下拉里消失**（以前也出现过），所以**任何挂在「他的 filter / facet 选项」上的方案都是脆的**。对策：抓全体 + `"journ" in title` 客户端筛（filter-independent），并以 Transparency Register 作实时兜底。欧委会修好分页后聚合页源会自动恢复完整覆盖，无需改码。
