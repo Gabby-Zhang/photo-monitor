@@ -784,12 +784,23 @@ async def run_checks(dry_run: bool, init_mode: bool):
                 if ep_person_id:
                     ep_results = await scrape_ep_multimedia(page, ep_person_id)
                     log.info(f"  EP Multimedia: {len(ep_results)} result(s)")
+                    # Each result is a single photo, and every photo in one set
+                    # shares the same title, so a per-item push would send N
+                    # identical alerts. Group by title and send one push per set,
+                    # linking to the newest-first search page (the per-item
+                    # /photoset/<mediaBusinessId> link is built from a photo id,
+                    # not a set id, and didn't show the new photos).
+                    ep_groups: dict[str, list[dict]] = {}
                     for item in ep_results:
                         if item["id"] not in seen_ids:
-                            seen_ids.add(item["id"])
-                            if not init_mode:
-                                notify_direct(person, "EP Multimedia", item["title"], item["url"], dry_run)
-                                total_new += 1
+                            ep_groups.setdefault(item["title"], []).append(item)
+                    ep_search_url = cfg["search_urls"].get("EP Multimedia", "")
+                    for title, items in ep_groups.items():
+                        if not init_mode:
+                            body = f"{title}（{len(items)} 张）" if len(items) > 1 else title
+                            notify_direct(person, "EP Multimedia", body, ep_search_url, dry_run)
+                            total_new += len(items)
+                        seen_ids.update(i["id"] for i in items)
 
                 # -- Getty API (optional) --
                 if GETTY_API_KEY:
