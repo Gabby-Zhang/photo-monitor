@@ -98,7 +98,7 @@ PERSONS = {
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=gabriel+attal&sort=newest",
             "Reuters Connect":    "https://www.reutersconnect.com/app/feed/pictures?query=Gabriel+Attal",
-            "Shutterstock Editorial": "https://www.shutterstock.com/editorial/search/gabriel-attal?sort=newest",
+            "Shutterstock Editorial": "https://www.shutterstock.com/fr/editorial/search/gabriel-attal?sort=date",
             "Imago Images":       "https://www.imago-images.com/search?querystring=Gabriel+Attal&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/gabriel-attal.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
@@ -116,7 +116,7 @@ PERSONS = {
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
             "Reuters Connect":    "https://www.reutersconnect.com/app/feed/pictures?query=St%C3%A9phane+S%C3%A9journ%C3%A9",
-            "Shutterstock Editorial": "https://www.shutterstock.com/editorial/search/stephane-sejourne?sort=newest",
+            "Shutterstock Editorial": "https://www.shutterstock.com/fr/editorial/search/stephane-sejourne?sort=date",
             "Imago Images":       "https://www.imago-images.com/search?querystring=S%C3%A9journ%C3%A9&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/stephane-sejourne.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
@@ -673,7 +673,7 @@ async def scrape_shutterstock(page: Page, query: str) -> list[dict]:
     stock search). Akamai blocks datacenter IPs, so this is a Mac-only source
     (skipped on CI); a block is logged and returns [] instead of failing."""
     slug = quote(_ascii(query).lower().strip().replace(" ", "-"))
-    url = f"https://www.shutterstock.com/editorial/search/{slug}?sort=newest"
+    url = f"https://www.shutterstock.com/fr/editorial/search/{slug}?sort=date"   # sort=newest gives HTTP 400
     try:
         resp = await page.goto(url, timeout=30000, wait_until="domcontentloaded")
         await asyncio.sleep(6)
