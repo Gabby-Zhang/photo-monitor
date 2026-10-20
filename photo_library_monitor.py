@@ -13,6 +13,7 @@ Sources:
   - Alamy               (Playwright + stealth, may get rate-limited)
   - Flickr RenewEurope  (RSS feed, always reliable)
   - Getty Images        (requires free API key — set GETTY_API_KEY env var)
+  - Reuters Connect     (Playwright + stealth)
 
 Usage:
   python3 photo_library_monitor.py          # normal run
@@ -90,6 +91,7 @@ PERSONS = {
         "must_contain": ["attal"],
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=gabriel+attal&sort=newest",
+            "Reuters Connect":    "https://www.reutersconnect.com/search?searchTerm=Gabriel%20Attal",
             "Imago Images":       "https://www.imago-images.com/search?querystring=Gabriel+Attal&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/gabriel-attal.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
@@ -104,6 +106,7 @@ PERSONS = {
         "ep_multimedia_person_id": 14399,
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
+            "Reuters Connect":    "https://www.reutersconnect.com/search?searchTerm=St%C3%A9phane%20S%C3%A9journ%C3%A9",
             "Imago Images":       "https://www.imago-images.com/search?querystring=S%C3%A9journ%C3%A9&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/stephane-sejourne.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
@@ -636,6 +639,50 @@ async def scrape_getty(page: Page, query: str) -> list[dict]:
         return []
 
 
+# ── Scraper: Reuters Connect (Playwright + Stealth) ──────────────────────────
+
+REUTERS_BASE = "https://www.reutersconnect.com"
+
+async def scrape_reuters_connect(page: Page, query: str) -> list[dict]:
+    """Reuters Connect search page — collects /item/<slug>/<id> links.
+
+    Item URLs look like /item/<headline-slug>/<base64 id>; the id segment is
+    stable, so it is the dedup key. The title is img alt + the full slug: the
+    slug carries the whole headline (not truncated like a thumbnail alt), so
+    is_relevant() can still see the person's name.
+    """
+    url = f"{REUTERS_BASE}/search?searchTerm={quote(query)}"
+    try:
+        await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+        await asyncio.sleep(6)
+        links = await page.query_selector_all("a[href*='/item/']")
+        results = []
+        seen_hrefs: set = set()
+        for link in links[:60]:
+            href = (await link.get_attribute("href") or "").split("?")[0]
+            if not href or href in seen_hrefs or "/item/" not in href:
+                continue
+            seen_hrefs.add(href)
+            parts = href.split("/item/", 1)[1].strip("/").split("/")
+            item_key = parts[-1]
+            slug = parts[0].replace("-", " ") if len(parts) > 1 else ""
+            img = await link.query_selector("img")
+            alt = (await img.get_attribute("alt") or "").strip() if img else ""
+            title = " — ".join(x for x in (alt, slug) if x) or query
+            full = f"{REUTERS_BASE}{href}" if href.startswith("/") else href
+            results.append({
+                "id":    make_id("reuters", item_key),
+                "title": title,
+                "url":   full,
+            })
+        if not results:
+            log.warning(f"Reuters Connect: 0 item links for '{query}' (page layout changed or blocked?)")
+        return results
+    except Exception as e:
+        log.warning(f"Reuters Connect error for '{query}': {e}")
+        return []
+
+
 # ── Scraper: Getty Images API (optional) ──────────────────────────────────────
 
 def scrape_getty_api(query: str) -> list[dict]:
@@ -728,6 +775,12 @@ async def run_checks(dry_run: bool, init_mode: bool):
                 getty_results = await scrape_getty(page, query)
                 log.info(f"  Getty Images: {len(getty_results)} result(s)")
                 process(getty_results, "Getty Images")
+                await asyncio.sleep(3)
+
+                # -- Reuters Connect (Playwright) --
+                reuters_results = await scrape_reuters_connect(page, query)
+                log.info(f"  Reuters Connect: {len(reuters_results)} result(s)")
+                process(reuters_results, "Reuters Connect")
                 await asyncio.sleep(3)
 
                 # -- Imago (Playwright) --
