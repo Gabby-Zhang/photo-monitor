@@ -76,6 +76,11 @@ SEEN_FILE = BASE_DIR / "photo_library_seen.json"
 LOG_FILE  = BASE_DIR / "photo_library_monitor.log"
 NTFY_BASE = "https://ntfy.sh"
 
+# EP Multimedia only notifies photosets newer than this many days; older ones the
+# search still returns (it lists the newest ~18 regardless of age) are seeded into
+# seen silently. Comfortably covers monitor downtime without re-spamming backlog.
+EP_NOTIFY_DAYS = 14
+
 # EU AV auto-download config (only runs locally on Mac, not on GitHub Actions)
 EU_AV_CDN        = "https://ec.europa.eu/avservices/avs/files/video6/repository/prod/photo/store"
 EU_AV_DOWNLOAD_DIR = Path.home() / "Pictures" / "Séjourné_EU_AV"
@@ -99,7 +104,9 @@ PERSONS = {
         "topic":   "photo-alert-stephane",
         "queries": ["Séjourné", "Stephane Sejourne"],
         "must_contain": ["séjourné", "sejourne"],
-        "eu_av_terms": ["séjourn", "sejourn"],
+        # "renew europe" catches group events (e.g. Renew Europe leaders' meetings)
+        # whose EU AV title/summary names the group but not Séjourné himself
+        "eu_av_terms": ["séjourn", "sejourn", "renew europe"],
         "eu_av_person_id": 241448,   # EU AV internal person ID for Stéphane Séjourné
         "ep_multimedia_person_id": 14399,
         "search_urls": {
@@ -521,8 +528,24 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
 
 # ── Scraper: EP Multimedia Centre ────────────────────────────────────────────
 
+def _ep_slug(title: str) -> str:
+    """Slugify a photoset title to match europarl's public URL path.
+    e.g. "EP Plenary Session - ... EU's automotive sector"
+      -> "ep-plenary-session-...-eus-automotive-sector"  (apostrophes dropped)."""
+    s = _ascii(title).lower()
+    s = re.sub(r"['’]", "", s)          # drop apostrophes: EU's -> eus
+    s = re.sub(r"[^a-z0-9]+", "-", s)   # any other run of non-alnum -> single hyphen
+    return s.strip("-")
+
+
 async def scrape_ep_multimedia(page: Page, person_id: int) -> list[dict]:
-    """EU Parliament Multimedia Centre — photos filtered by person ID."""
+    """EU Parliament Multimedia Centre — photosets filtered by person ID.
+
+    We read the photoset-level array (results.photosets), not results.photos:
+    the individual-photo ids (e.g. 20260707_EP-208082A_VZ1_EG_0083) are NOT
+    valid /photoset/ URLs (they 404), and each event holds dozens of them —
+    using them meant broken links plus one notification per photo. The public
+    album URL is /en/photoset/{title-slug}_{photosetBusinessId} (e.g. EP-208082A)."""
     EP_BASE = "https://multimedia.europarl.europa.eu"
     search_url = f"{EP_BASE}/en/search?tab=photos&person={person_id}&photoType=25&orderBy=newest&page=1&q="
     results = []
@@ -541,22 +564,23 @@ async def scrape_ep_multimedia(page: Page, person_id: int) -> list[dict]:
         await asyncio.sleep(6)
         nd = next_data_holder.get("data")
         if nd:
-            photos = (
+            photosets = (
                 nd.get("pageProps", {})
                   .get("results", {})
-                  .get("photos", {})
+                  .get("photosets", {})
                   .get("content", [])
             )
-            for item in photos[:60]:  # raised from 20: plenary days produce large photosets
-                bid = item.get("mediaBusinessId", "")
+            for item in photosets[:60]:  # one entry per event; plenary days produce many
+                bid = item.get("mediaBusinessId", "")   # album id, e.g. EP-208082A
                 if not bid:
                     continue
                 title = item.get("title", bid)
-                url   = f"{EP_BASE}/en/photoset/{bid}"
+                url   = f"{EP_BASE}/en/photoset/{_ep_slug(title)}_{bid}"
                 results.append({
                     "id":    make_id("ep_multimedia", bid),
                     "title": title,
                     "url":   url,
+                    "date":  item.get("mediaDate", "")[:10],  # YYYY-MM-DD, for backlog filtering
                 })
         else:
             log.warning("EP Multimedia: no _next/data captured")
@@ -762,9 +786,12 @@ async def run_checks(dry_run: bool, init_mode: bool):
                                 total_new += 1
                                 # Auto-download photos to Mac (skipped on CI and dry-run)
                                 if item.get("eu_av_base_ref") and not dry_run and not os.environ.get("GITHUB_ACTIONS"):
+                                    # Download only Séjourné's own photos, never
+                                    # Renew-Europe-only group events (notify only).
+                                    download_terms = [t for t in eu_terms if t != "renew europe"]
                                     n_dl = eu_av_download_photos(
                                         item["eu_av_base_ref"],
-                                        eu_terms,
+                                        download_terms,
                                         shoot_date=item.get("eu_av_date", ""),
                                         title=item.get("title", ""),
                                     )
@@ -780,16 +807,33 @@ async def run_checks(dry_run: bool, init_mode: bool):
                                             log.warning(f"download notify error: {e}")
 
                 # -- EP Multimedia Centre (Séjourné only, Playwright) --
+                # The search returns the newest ~18 photosets regardless of age
+                # (back ~14 months). Only NOTIFY those within EP_NOTIFY_DAYS; older
+                # ones are silently seeded into seen (same "旧 backlog 静默入库"
+                # pattern as the calendar) so we never re-spam historical events.
                 ep_person_id = cfg.get("ep_multimedia_person_id")
                 if ep_person_id:
+                    import datetime as _dt
+                    ep_cutoff = _dt.date.today() - _dt.timedelta(days=EP_NOTIFY_DAYS)
                     ep_results = await scrape_ep_multimedia(page, ep_person_id)
                     log.info(f"  EP Multimedia: {len(ep_results)} result(s)")
+                    ep_seeded = 0
                     for item in ep_results:
-                        if item["id"] not in seen_ids:
-                            seen_ids.add(item["id"])
-                            if not init_mode:
-                                notify_direct(person, "EP Multimedia", item["title"], item["url"], dry_run)
-                                total_new += 1
+                        if item["id"] in seen_ids:
+                            continue
+                        seen_ids.add(item["id"])
+                        recent = True
+                        try:
+                            recent = _dt.date.fromisoformat(item["date"]) >= ep_cutoff
+                        except (ValueError, KeyError):
+                            pass  # missing/bad date → treat as recent, err on notifying
+                        if not init_mode and recent:
+                            notify_direct(person, "EP Multimedia", item["title"], item["url"], dry_run)
+                            total_new += 1
+                        elif not recent:
+                            ep_seeded += 1
+                    if ep_seeded:
+                        log.info(f"  EP Multimedia: {ep_seeded} old photoset(s) seeded silently (backlog)")
 
                 # -- Getty API (optional) --
                 if GETTY_API_KEY:

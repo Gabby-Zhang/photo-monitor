@@ -6,12 +6,31 @@ on:
     - cron: '0 7-16 * * 1-5'       # hourly, 09:00-18:00 Paris, Mon-Fri
     - cron: '0 0,3,6,18,21 * * 1-5' # every 3h outside that window, Mon-Fri
     - cron: '0 */3 * * 0,6'        # every 3h all day, Sat & Sun
+    # ── Strasbourg EP plenary weeks: ramp to every 20 min, daytime 07:00-18:00 UTC ──
+    # (09:00-20:00 Paris CEST / 08:00-19:00 CET). day-of-month + month target the
+    # exact 4-day part-sessions (Mon-Thu). Big plenary days produce 30-50+ photos
+    # and the 60-item cap drops the rest on an hourly cadence — see CLAUDE.md.
+    # NOTE: cron has no year field; these are 2026 dates and shift ~a week each
+    # year — update annually from the official EP calendar.
+    - cron: '*/20 7-18 6-9 7 *'    # Jul 6-9
+    - cron: '*/20 7-18 14-17 9 *'  # Sep 14-17
+    - cron: '*/20 7-18 5-8 10 *'   # Oct 5-8
+    - cron: '*/20 7-18 19-22 10 *' # Oct 19-22
+    - cron: '*/20 7-18 23-26 11 *' # Nov 23-26
+    - cron: '*/20 7-18 14-17 12 *' # Dec 14-17
   workflow_dispatch:          # allow manual trigger from GitHub UI
     inputs:
       init_mode:
         description: 'Run in init mode (seed cache, no notifications)'
         required: false
         default: 'false'
+
+# During plenary weeks the hourly and every-30-min schedules collide at :00.
+# Serialize runs so two workers don't both read the same seen.json and each
+# fire a notification for the same new photo (the cache is per-run_id).
+concurrency:
+  group: photo-monitor
+  cancel-in-progress: false
 
 jobs:
   monitor:
