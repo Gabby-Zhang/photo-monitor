@@ -35,8 +35,7 @@ async def main():
                 res = await m.scrape_reuters_connect(page, q)
                 print(f"\n=== {q}: {len(res)} 条 ===")
                 for r in res[:10]:
-                    ok = "✓" if m.is_relevant(r["title"], person) else "✗过滤"
-                    print(f"{ok}  {r['title'][:90]}\n     {r['url']}")
+                    print(f"-  {r['title'][:90]}\n     {r['url']}")
         await asyncio.to_thread(input, "\n看完后按回车关闭浏览器…")
         await ctx.close()
 

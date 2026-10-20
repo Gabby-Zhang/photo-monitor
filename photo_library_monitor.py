@@ -672,9 +672,11 @@ async def open_reuters_context(pw):
 async def scrape_reuters_connect(page: Page, query: str) -> list[dict]:
     """Pictures-only search (/app/feed/pictures), collects /app/item/... links.
 
-    Dedup key is the last path segment of the item URL. Title is img alt + the
-    rest of the path (the headline slug), so is_relevant() sees the name even
-    if the alt text is short.
+    Dedup key is the last path segment of the item URL. Card headlines are
+    agency slugs like FRANCE-NOUMEA-POLITICAL-MEETING that usually omit the
+    person's name (3 of 4 Séjourné photos on 2026-10-19), so is_relevant()
+    would drop real matches. Reuters' search is full-text over the caption,
+    so trust it like Getty (confirmed_match).
     """
     url = f"{REUTERS_BASE}/app/feed/pictures?query={quote(query).replace('%20', '+')}"
     try:
@@ -696,12 +698,14 @@ async def scrape_reuters_connect(page: Page, query: str) -> list[dict]:
             slug = " ".join(p.replace("-", " ") for p in parts[:-1])
             img = await link.query_selector("img")
             alt = (await img.get_attribute("alt") or "").strip() if img else ""
-            title = " — ".join(x for x in (alt, slug) if x) or query
+            text = " ".join((await link.inner_text() or "").split())
+            title = " — ".join(x for x in (alt or text, slug) if x) or query
             full = f"{REUTERS_BASE}{href}" if href.startswith("/") else href
             results.append({
                 "id":    make_id("reuters", item_key),
                 "title": title,
                 "url":   full,
+                "confirmed_match": True,
             })
         if not results:
             log.warning(f"Reuters Connect: 0 item links for '{query}' (page layout changed?)")
