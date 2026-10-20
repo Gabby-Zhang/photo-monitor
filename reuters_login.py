@@ -38,9 +38,10 @@ async def main():
                     print(f"-  {r['title'][:90]}\n     {r['url']}")
 
         # Shutterstock 用同一个资料夹:若弹验证码,在窗口里手动过一次,之后会被记住
-        await page.goto(m.PERSONS["Gabriel Attal"]["search_urls"]["Shutterstock Editorial"], timeout=60000)
+        ss_url = m.PERSONS["Gabriel Attal"]["search_urls"]["Shutterstock Editorial"]
+        await page.goto(ss_url, timeout=60000)
         await asyncio.to_thread(input, "\n>>> Shutterstock 页面已打开。若有验证码/人机验证,在窗口里完成,看到图片列表后按回车…")
-        res = await m.scrape_shutterstock(page, "Gabriel Attal")
+        res = await m.scrape_shutterstock(page, ss_url, "Gabriel Attal")
         print(f"\n=== Shutterstock Gabriel Attal: {len(res)} 条 ===")
         for r in res[:10]:
             print(f"-  {r['title'][:90]}\n     {r['url']}")

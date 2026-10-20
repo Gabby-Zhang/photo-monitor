@@ -98,7 +98,7 @@ PERSONS = {
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=gabriel+attal&sort=newest",
             "Reuters Connect":    "https://www.reutersconnect.com/app/feed/pictures?query=Gabriel+Attal",
-            "Shutterstock Editorial": "https://www.shutterstock.com/fr/editorial/search/gabriel-attal?sort=date",
+            "Shutterstock Editorial": "https://www.shutterstock.com/fr/editorial/search/gabriel-attal?sort=date&person=85506",
             "Imago Images":       "https://www.imago-images.com/search?querystring=Gabriel+Attal&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/gabriel-attal.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
@@ -116,7 +116,7 @@ PERSONS = {
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
             "Reuters Connect":    "https://www.reutersconnect.com/app/feed/pictures?query=St%C3%A9phane+S%C3%A9journ%C3%A9",
-            "Shutterstock Editorial": "https://www.shutterstock.com/fr/editorial/search/stephane-sejourne?sort=date",
+            "Shutterstock Editorial": "https://www.shutterstock.com/fr/editorial/search/stephane-sejourne?sort=date&person=110070",
             "Imago Images":       "https://www.imago-images.com/search?querystring=S%C3%A9journ%C3%A9&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/stephane-sejourne.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
@@ -668,12 +668,10 @@ async def scrape_getty(page: Page, query: str) -> list[dict]:
 
 # ── Scraper: Shutterstock Editorial (Playwright + Stealth) ────────────────────
 
-async def scrape_shutterstock(page: Page, query: str) -> list[dict]:
+async def scrape_shutterstock(page: Page, url: str, query: str) -> list[dict]:
     """Shutterstock *Editorial* search (news photos live there, not in the main
     stock search). Akamai blocks datacenter IPs, so this is a Mac-only source
     (skipped on CI); a block is logged and returns [] instead of failing."""
-    slug = quote(_ascii(query).lower().strip().replace(" ", "-"))
-    url = f"https://www.shutterstock.com/fr/editorial/search/{slug}?sort=date"   # sort=newest gives HTTP 400
     try:
         resp = await page.goto(url, timeout=30000, wait_until="domcontentloaded")
         await asyncio.sleep(6)
@@ -894,8 +892,11 @@ async def run_checks(dry_run: bool, init_mode: bool, mac_only: bool = False):
                 # Prefer the real-Chrome profile page: the bundled Playwright
                 # Chromium gets a 403 bot wall even from a home IP, and a
                 # challenge solved once in that profile (reuters_login.py) sticks.
-                if not os.environ.get("GITHUB_ACTIONS"):
-                    ss_results = await scrape_shutterstock(reuters_page or page, query)
+                # Once per person (on the first query): the URL filters by
+                # Shutterstock's person id, so every query gives the same page.
+                if not os.environ.get("GITHUB_ACTIONS") and query == cfg["queries"][0]:
+                    ss_url = cfg["search_urls"]["Shutterstock Editorial"]
+                    ss_results = await scrape_shutterstock(reuters_page or page, ss_url, query)
                     log.info(f"  Shutterstock Editorial: {len(ss_results)} result(s)")
                     process(ss_results, "Shutterstock Editorial")
                     await asyncio.sleep(3)
