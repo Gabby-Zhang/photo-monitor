@@ -779,7 +779,7 @@ def scrape_getty_api(query: str) -> list[dict]:
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
 
-async def run_checks(dry_run: bool, init_mode: bool):
+async def run_checks(dry_run: bool, init_mode: bool, reuters_only: bool = False):
     seen = load_seen()
     total_new = 0
 
@@ -831,18 +831,24 @@ async def run_checks(dry_run: bool, init_mode: bool):
                     if skipped:
                         log.info(f"  {source}: {skipped} filtered out (name not in title)")
 
-                # -- Getty (Playwright + Stealth) --
-                getty_results = await scrape_getty(page, query)
-                log.info(f"  Getty Images: {len(getty_results)} result(s)")
-                process(getty_results, "Getty Images")
-                await asyncio.sleep(3)
-
                 # -- Reuters Connect (logged-in profile, Mac only) --
                 if reuters_page:
                     reuters_results = await scrape_reuters_connect(reuters_page, query)
                     log.info(f"  Reuters Connect: {len(reuters_results)} result(s)")
                     process(reuters_results, "Reuters Connect")
                     await asyncio.sleep(3)
+
+                # Mac launchd runs --reuters-only: every other source is
+                # already covered by GitHub Actions, and running them here too
+                # would notify each new photo twice (separate seen files).
+                if reuters_only:
+                    continue
+
+                # -- Getty (Playwright + Stealth) --
+                getty_results = await scrape_getty(page, query)
+                log.info(f"  Getty Images: {len(getty_results)} result(s)")
+                process(getty_results, "Getty Images")
+                await asyncio.sleep(3)
 
                 # -- Imago (Playwright) --
                 imago_results = await scrape_imago(page, query)
@@ -955,6 +961,8 @@ def main():
                         help="Seed seen-list without sending notifications")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print new items without notifications or saving state")
+    parser.add_argument("--reuters-only", action="store_true",
+                        help="Only check Reuters Connect (Mac launchd; CI covers the rest)")
     args = parser.parse_args()
 
     if args.init:
@@ -964,7 +972,7 @@ def main():
     else:
         log.info("=== Photo Library Monitor ===")
 
-    asyncio.run(run_checks(dry_run=args.dry_run, init_mode=args.init))
+    asyncio.run(run_checks(dry_run=args.dry_run, init_mode=args.init, reuters_only=args.reuters_only))
 
 
 if __name__ == "__main__":
