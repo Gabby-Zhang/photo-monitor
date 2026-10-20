@@ -236,7 +236,13 @@ def push_to_github(markdown: str):
 
 # ── Notifications ──────────────────────────────────────────────────────────────
 
-def send_notification(new_items: list):
+def _osa_quote(s: str) -> str:
+    """Escape a string for use inside an AppleScript "..." literal."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def send_notification(new_items: list) -> bool:
+    """Returns True if the ntfy push went through (or ntfy is disabled)."""
     count   = len(new_items)
     subject = f"{count} new Séjourné item{'s' if count > 1 else ''}"
     lines   = [
@@ -249,15 +255,15 @@ def send_notification(new_items: list):
 
     # macOS system notification
     mac_script = (
-        f'display notification "{new_items[0]["title"][:80]}" '
+        f'display notification "{_osa_quote(new_items[0]["title"][:80])}" '
         f'with title "Séjourné AV" '
-        f'subtitle "{subject}"'
+        f'subtitle "{_osa_quote(subject)}"'
     )
     subprocess.run(["osascript", "-e", mac_script], capture_output=True)
 
     # ntfy.sh push notification
     if not NTFY_TOPIC:
-        return
+        return True
     try:
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
@@ -269,10 +275,14 @@ def send_notification(new_items: list):
                 "Click":    SEARCH_URL,
             },
             timeout=10,
-        )
+        ).raise_for_status()
         print(f"   ntfy notification sent ✅")
-    except requests.RequestException as e:
+        return True
+    # Broad on purpose: a non-ASCII header raised UnicodeEncodeError, not a
+    # RequestException, and crashed the run after state was already saved.
+    except Exception as e:
         print(f"   ntfy failed: {e}")
+        return False
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -342,7 +352,13 @@ def main():
             print(f"    {p['url']}")
         return
 
-    # Persist state
+    # Notify first, persist after: if the push fails, the items stay unseen
+    # and the next hourly run retries them instead of silently dropping them
+    # (2026-10: 12 items were lost to a notify crash under the old order).
+    if not send_notification(new_items):
+        print("\n⚠️  Notification failed — state NOT saved, will retry next run")
+        sys.exit(1)
+
     state["seen"]      = seen
     state["all_items"] = all_items
     save_state(state)
@@ -350,9 +366,6 @@ def main():
     # Build markdown and push
     markdown = build_markdown(all_items)
     push_to_github(markdown)
-
-    # Notify
-    send_notification(new_items)
 
     print(f"\n✅ Done — {len(new_items)} new Séjourné item(s) logged")
     for p in new_items:
