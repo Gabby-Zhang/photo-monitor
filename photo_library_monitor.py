@@ -891,8 +891,11 @@ async def run_checks(dry_run: bool, init_mode: bool, mac_only: bool = False):
                     await asyncio.sleep(3)
 
                 # -- Shutterstock Editorial (Mac only: Akamai blocks CI IPs) --
+                # Prefer the real-Chrome profile page: the bundled Playwright
+                # Chromium gets a 403 bot wall even from a home IP, and a
+                # challenge solved once in that profile (reuters_login.py) sticks.
                 if not os.environ.get("GITHUB_ACTIONS"):
-                    ss_results = await scrape_shutterstock(page, query)
+                    ss_results = await scrape_shutterstock(reuters_page or page, query)
                     log.info(f"  Shutterstock Editorial: {len(ss_results)} result(s)")
                     process(ss_results, "Shutterstock Editorial")
                     await asyncio.sleep(3)

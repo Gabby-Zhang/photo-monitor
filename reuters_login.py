@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Reuters Connect 登录助手(仅 Mac 本机)。
+Reuters Connect 登录助手 + Shutterstock 人机验证(仅 Mac 本机)。
 
 Reuters Connect 搜索必须登录,且登录有设备验证,只能人手过。本脚本打开
 photo_library_monitor 用的同一个持久浏览器资料夹(~/.reuters_connect_profile),
@@ -33,9 +33,17 @@ async def main():
         for person, cfg in m.PERSONS.items():
             for q in cfg["queries"]:
                 res = await m.scrape_reuters_connect(page, q)
-                print(f"\n=== {q}: {len(res)} 条 ===")
+                print(f"\n=== Reuters {q}: {len(res)} 条 ===")
                 for r in res[:10]:
                     print(f"-  {r['title'][:90]}\n     {r['url']}")
+
+        # Shutterstock 用同一个资料夹:若弹验证码,在窗口里手动过一次,之后会被记住
+        await page.goto(m.PERSONS["Gabriel Attal"]["search_urls"]["Shutterstock Editorial"], timeout=60000)
+        await asyncio.to_thread(input, "\n>>> Shutterstock 页面已打开。若有验证码/人机验证,在窗口里完成,看到图片列表后按回车…")
+        res = await m.scrape_shutterstock(page, "Gabriel Attal")
+        print(f"\n=== Shutterstock Gabriel Attal: {len(res)} 条 ===")
+        for r in res[:10]:
+            print(f"-  {r['title'][:90]}\n     {r['url']}")
         await asyncio.to_thread(input, "\n看完后按回车关闭浏览器…")
         await ctx.close()
 
