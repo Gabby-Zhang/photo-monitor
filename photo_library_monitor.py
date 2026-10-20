@@ -651,7 +651,7 @@ REUTERS_LAUNCH  = dict(
     headless=False,
     no_viewport=True,
     args=["--disable-blink-features=AutomationControlled"],
-    ignore_default_args=["--enable-automation"],
+    ignore_default_args=["--enable-automation", "--no-sandbox"],
 )
 
 async def open_reuters_context(pw):
