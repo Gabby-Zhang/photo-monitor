@@ -14,6 +14,7 @@ Sources:
   - Flickr RenewEurope  (RSS feed, always reliable)
   - Getty Images        (requires free API key — set GETTY_API_KEY env var)
   - Reuters Connect     (Playwright, logged-in profile — Mac only; log in once via reuters_login.py)
+  - Shutterstock Editorial (Playwright — Mac only; Akamai blocks datacenter IPs)
 
 Usage:
   python3 photo_library_monitor.py          # normal run
@@ -97,6 +98,7 @@ PERSONS = {
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=gabriel+attal&sort=newest",
             "Reuters Connect":    "https://www.reutersconnect.com/app/feed/pictures?query=Gabriel+Attal",
+            "Shutterstock Editorial": "https://www.shutterstock.com/editorial/search/gabriel-attal?sort=newest",
             "Imago Images":       "https://www.imago-images.com/search?querystring=Gabriel+Attal&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/gabriel-attal.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
@@ -114,6 +116,7 @@ PERSONS = {
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
             "Reuters Connect":    "https://www.reutersconnect.com/app/feed/pictures?query=St%C3%A9phane+S%C3%A9journ%C3%A9",
+            "Shutterstock Editorial": "https://www.shutterstock.com/editorial/search/stephane-sejourne?sort=newest",
             "Imago Images":       "https://www.imago-images.com/search?querystring=S%C3%A9journ%C3%A9&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/stephane-sejourne.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
@@ -663,6 +666,55 @@ async def scrape_getty(page: Page, query: str) -> list[dict]:
         return []
 
 
+# ── Scraper: Shutterstock Editorial (Playwright + Stealth) ────────────────────
+
+async def scrape_shutterstock(page: Page, query: str) -> list[dict]:
+    """Shutterstock *Editorial* search (news photos live there, not in the main
+    stock search). Akamai blocks datacenter IPs, so this is a Mac-only source
+    (skipped on CI); a block is logged and returns [] instead of failing."""
+    slug = quote(_ascii(query).lower().strip().replace(" ", "-"))
+    url = f"https://www.shutterstock.com/editorial/search/{slug}?sort=newest"
+    try:
+        resp = await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+        await asyncio.sleep(6)
+        status = resp.status if resp else 0
+        page_title = (await page.title()) or ""
+        if status in (403, 429) or "access denied" in page_title.lower():
+            log.warning(f"Shutterstock: blocked (HTTP {status}, title '{page_title[:40]}') for '{query}'")
+            return []
+
+        links = await page.query_selector_all("a[href*='/editorial/image-editorial/']")
+        results = []
+        seen_imgs: set = set()
+        for link in links[:60]:
+            href = (await link.get_attribute("href") or "").split("?")[0]
+            # Detail URLs end with the image id, e.g. …-armed-14337612o
+            m = re.search(r"-(\d{6,}[a-z]*)/?$", href)
+            if not m or m.group(1) in seen_imgs:
+                continue
+            img_id = m.group(1)
+            seen_imgs.add(img_id)
+            img = await link.query_selector("img")
+            alt = (await img.get_attribute("alt") or "").strip() if img else ""
+            slug_text = href.rsplit("/", 1)[-1][: -len(img_id) - 1].replace("-", " ")
+            full = f"https://www.shutterstock.com{href}" if href.startswith("/") else href
+            results.append({
+                "id":    make_id("shutterstock", img_id),
+                "title": alt or slug_text or query,
+                "url":   full,
+                # Both alt text and URL slug are truncated captions (name may be
+                # cut off, cf. Getty); the search phrase is the full name, so
+                # trust the server-side match like Getty.
+                "confirmed_match": True,
+            })
+        if not results:
+            log.warning(f"Shutterstock: 0 links parsed for '{query}' (HTTP {status}, title '{page_title[:40]}')")
+        return results
+    except Exception as e:
+        log.warning(f"Shutterstock error for '{query}': {e}")
+        return []
+
+
 # ── Scraper: Reuters Connect (logged-in Playwright profile) ─────────────────
 
 REUTERS_BASE    = "https://www.reutersconnect.com"
@@ -779,7 +831,7 @@ def scrape_getty_api(query: str) -> list[dict]:
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
 
-async def run_checks(dry_run: bool, init_mode: bool, reuters_only: bool = False):
+async def run_checks(dry_run: bool, init_mode: bool, mac_only: bool = False):
     seen = load_seen()
     total_new = 0
 
@@ -838,10 +890,17 @@ async def run_checks(dry_run: bool, init_mode: bool, reuters_only: bool = False)
                     process(reuters_results, "Reuters Connect")
                     await asyncio.sleep(3)
 
-                # Mac launchd runs --reuters-only: every other source is
-                # already covered by GitHub Actions, and running them here too
-                # would notify each new photo twice (separate seen files).
-                if reuters_only:
+                # -- Shutterstock Editorial (Mac only: Akamai blocks CI IPs) --
+                if not os.environ.get("GITHUB_ACTIONS"):
+                    ss_results = await scrape_shutterstock(page, query)
+                    log.info(f"  Shutterstock Editorial: {len(ss_results)} result(s)")
+                    process(ss_results, "Shutterstock Editorial")
+                    await asyncio.sleep(3)
+
+                # Mac launchd runs --mac-only: every other source is already
+                # covered by GitHub Actions, and running them here too would
+                # notify each new photo twice (separate seen files).
+                if mac_only:
                     continue
 
                 # -- Getty (Playwright + Stealth) --
@@ -961,8 +1020,10 @@ def main():
                         help="Seed seen-list without sending notifications")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print new items without notifications or saving state")
-    parser.add_argument("--reuters-only", action="store_true",
-                        help="Only check Reuters Connect (Mac launchd; CI covers the rest)")
+    # --reuters-only is the old name, kept so the existing launchd plist works
+    parser.add_argument("--mac-only", "--reuters-only", dest="mac_only", action="store_true",
+                        help="Only check the Mac-only sources: Reuters Connect + Shutterstock "
+                             "(Mac launchd; CI covers the rest)")
     args = parser.parse_args()
 
     if args.init:
@@ -972,7 +1033,7 @@ def main():
     else:
         log.info("=== Photo Library Monitor ===")
 
-    asyncio.run(run_checks(dry_run=args.dry_run, init_mode=args.init, reuters_only=args.reuters_only))
+    asyncio.run(run_checks(dry_run=args.dry_run, init_mode=args.init, mac_only=args.mac_only))
 
 
 if __name__ == "__main__":
