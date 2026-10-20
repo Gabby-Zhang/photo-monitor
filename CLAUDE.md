@@ -40,6 +40,7 @@ ICS 的 UID 用 `md5(date|title)` **确定性**生成（不能用 `hash()`，Pyt
 ## 定时运行
 
 - **GitHub Actions `photo_monitor.yml`** → `photo_library_monitor.py`，工作日 9:00–18:00 巴黎时间每小时一次，其余时段每 3 小时一次；支持 `init_mode` 手动触发。cron 写的是 UTC，按巴黎夏令时(CEST=UTC+2)映射(07:00–16:00 UTC)；冬令时(CET=UTC+1)会整体偏移一小时，需手动调
+  - **斯特拉斯堡 EP 全会周加频**：全会那 4 天(周一–周四)白天时段提频到**每 20 分钟一次**(07:00–18:00 UTC ≈ 巴黎 09:00–20:00)——大全会日单天 30-50+ 张,60 条上限会漏。用 `day-of-month + month` 精确命中会期(cron 无年份字段,写死的是 **2026** 日期,每年会漂移约一周,需按官方 EP 日历手动更新)。2026 会期:1/19-22、2/9-12、3/9-12、4/27-30、5/18-21、6/15-18、7/6-9、9/14-17、10/5-8、10/19-22、11/23-26、12/14-17(已过的月份 cron 仍留着,明年复用前记得改)。加频后每逢整点 hourly 与 30min 两个 schedule 会撞,靠 workflow 顶部 `concurrency: {group: photo-monitor, cancel-in-progress: false}` 串行化,避免两个 worker 同读 seen.json 各推一遍(cache 按 run_id 存)
 - **GitHub Actions `welcome_email.yml`** → `welcome_email.py`，`subscribers.json` 有 push 时自动触发
 - **Mac launchd `com.sejourn.photo-monitor.plist`** → `sejourn_photo_monitor.py`，**工作日** 9:00–18:00 每整点
 - **Mac launchd `com.photomonitor.attal-sejourne.plist`** → `photo_library_monitor.py`，每 3 小时
@@ -114,6 +115,7 @@ EU AV 自动下载仅本机运行（检测 `GITHUB_ACTIONS` env 跳过），下�
   - 新增源时先确认标题字段是否被截断、人名位置，避免重蹈
 - **单次抓取上限**：Getty / EP Multimedia 取前 60 条（原为 20）。大活动日（贸易展、全会）单天 30-50+ 张，3 小时跑一次时排在前 20 之后的会被挤掉漏掉。Getty 搜索页一次渲染约 60 张缩略图，故 60 有效；再多需翻页
 - **Reuters Connect 必须登录（仅 Mac 本机跑）**：未登录访问搜索会被转到 `/login`，登录又有设备验证、只能人手过。所以 `photo_library_monitor.py` 复用一个持久浏览器资料夹 `~/.reuters_connect_profile`（优先用本机真 Google Chrome，去掉自动化标记），由 **`python3 reuters_login.py`** 手动登录一次存下会话。搜索地址是登录后的 `/app/feed/pictures?query=<人名>`（旧的 `/search?searchTerm=` 未登录可用、登录后会被带回首页），图片链接格式 `/app/item/...`。卡片标题是通讯社 slug(如 `FRANCE-NOUMEA-POLITICAL-MEETING`)、多数不含人名,所以同 Getty 一样**信任搜索、加 `confirmed_match`**。排序「Newest First」存在账号偏好里、不在 URL 上。GitHub Actions 上没有这个资料夹 → 自动跳过此源。日志出现 `LOGIN EXPIRED` 就重跑 `reuters_login.py`；跑 `reuters_login.py` 时别同时跑监控（同一资料夹会被锁）
+- **EP Multimedia 用 photoset 级别、不用单张 photo（重要，2026-07 修）**：search JSON 里 `results.photos.content` 是单张照片，其 `mediaBusinessId`（如 `20260707_EP-208082A_VZ1_EG_0083`）**不是**合法的 `/photoset/` 地址（点开 404），且一场活动含几十张 → 旧代码既发死链又对同一活动刷几十条通知。改读 `results.photosets.content`（相册级，`mediaBusinessId` 形如 `EP-208082A`），URL 拼 `/en/photoset/{标题slug}_{相册id}`。slug = 小写、去重音、去撇号（`EU's`→`eus`）、其余非字母数字压成单 `-`（见 `_ep_slug`，已对 18 条实测全中）。**search 只按 `orderBy=newest` 返回最新 ~18 个相册、不分年份（能回溯到 14 个月前）**，故用 `EP_NOTIFY_DAYS`（14 天）过滤:超窗的老相册**静默塞进 seen 不推**（同日历「旧 backlog 静默入库」），只对窗内新相册推。去重 id 从单张换到相册级——若不加日期窗,换 id 那次首跑会把全部 18 个（含 2025 的）当新的全推一遍
 - **HTTP 头只能用 ASCII**：ntfy `Title:` 等头部不能含重音字符（如 `Séjourné`），用 `Sejourn` 代替
 - **聚合日历页改版 = 委员 facet 已废（2026-06 起，重要）**：欧委会把学院日历页迁到 OpenEuropa List Pages，旧的 `?f[0]=commissioner_dynamic_commissioner_dynamic:…COM_…` 过滤参数被**完全忽略**（连官网自己的 “See all” 都失效），分页 `?page=` 也不推进、`Past` 状态筛选不生效——**整套 facet/分页当前对所有人都坏**。更坑的是 **Séjourné 直接从委员下拉里消失**（以前也出现过），所以**任何挂在「他的 filter / facet 选项」上的方案都是脆的**。对策：抓全体 + `"journ" in title` 客户端筛（filter-independent），并以 Transparency Register 作实时兜底。欧委会修好分页后聚合页源会自动恢复完整覆盖，无需改码。
 - **EU 委员会网站 CDN**：从 GitHub 云端 IP 抓取仍可能返回 0 条 / 延迟数小时；客户端名字筛选（`"journ" in title.lower()`）务必保留，否则会混入其他委员的活动
