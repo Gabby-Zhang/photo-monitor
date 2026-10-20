@@ -13,7 +13,7 @@ Sources:
   - Alamy               (Playwright + stealth, may get rate-limited)
   - Flickr RenewEurope  (RSS feed, always reliable)
   - Getty Images        (requires free API key — set GETTY_API_KEY env var)
-  - Reuters Connect     (Playwright + stealth)
+  - Reuters Connect     (Playwright, logged-in profile — Mac only; log in once via reuters_login.py)
 
 Usage:
   python3 photo_library_monitor.py          # normal run
@@ -91,7 +91,7 @@ PERSONS = {
         "must_contain": ["attal"],
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=gabriel+attal&sort=newest",
-            "Reuters Connect":    "https://www.reutersconnect.com/search?searchTerm=Gabriel%20Attal",
+            "Reuters Connect":    "https://www.reutersconnect.com/app/feed/pictures?query=Gabriel+Attal",
             "Imago Images":       "https://www.imago-images.com/search?querystring=Gabriel+Attal&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/gabriel-attal.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
@@ -106,7 +106,7 @@ PERSONS = {
         "ep_multimedia_person_id": 14399,
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
-            "Reuters Connect":    "https://www.reutersconnect.com/search?searchTerm=St%C3%A9phane%20S%C3%A9journ%C3%A9",
+            "Reuters Connect":    "https://www.reutersconnect.com/app/feed/pictures?query=St%C3%A9phane+S%C3%A9journ%C3%A9",
             "Imago Images":       "https://www.imago-images.com/search?querystring=S%C3%A9journ%C3%A9&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/stephane-sejourne.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
@@ -639,33 +639,61 @@ async def scrape_getty(page: Page, query: str) -> list[dict]:
         return []
 
 
-# ── Scraper: Reuters Connect (Playwright + Stealth) ──────────────────────────
+# ── Scraper: Reuters Connect (logged-in Playwright profile) ─────────────────
 
-REUTERS_BASE = "https://www.reutersconnect.com"
+REUTERS_BASE    = "https://www.reutersconnect.com"
+# Search needs a logged-in account (anonymous visits redirect to /login), and
+# login has device verification that only a human can pass. So we reuse a
+# persistent browser profile the user logged into once via reuters_login.py.
+# Mac only: CI has no such profile, so the source is skipped there.
+REUTERS_PROFILE = Path.home() / ".reuters_connect_profile"
+REUTERS_LAUNCH  = dict(
+    headless=False,
+    no_viewport=True,
+    args=["--disable-blink-features=AutomationControlled"],
+    ignore_default_args=["--enable-automation"],
+)
+
+async def open_reuters_context(pw):
+    """Open the logged-in Reuters profile, or None if unavailable (CI / never logged in)."""
+    if os.environ.get("GITHUB_ACTIONS") or not REUTERS_PROFILE.exists():
+        log.info("Reuters Connect: skipped (no logged-in profile — run reuters_login.py on the Mac)")
+        return None
+    try:
+        # Real Google Chrome first: Reuters' device check is less suspicious of it
+        return await pw.chromium.launch_persistent_context(str(REUTERS_PROFILE), channel="chrome", **REUTERS_LAUNCH)
+    except Exception:
+        try:
+            return await pw.chromium.launch_persistent_context(str(REUTERS_PROFILE), **REUTERS_LAUNCH)
+        except Exception as e:
+            log.warning(f"Reuters Connect: cannot open profile ({e}) — is reuters_login.py still running?")
+            return None
 
 async def scrape_reuters_connect(page: Page, query: str) -> list[dict]:
-    """Reuters Connect search page — collects /item/<slug>/<id> links.
+    """Pictures-only search (/app/feed/pictures), collects /app/item/... links.
 
-    Item URLs look like /item/<headline-slug>/<base64 id>; the id segment is
-    stable, so it is the dedup key. The title is img alt + the full slug: the
-    slug carries the whole headline (not truncated like a thumbnail alt), so
-    is_relevant() can still see the person's name.
+    Dedup key is the last path segment of the item URL. Title is img alt + the
+    rest of the path (the headline slug), so is_relevant() sees the name even
+    if the alt text is short.
     """
-    url = f"{REUTERS_BASE}/search?searchTerm={quote(query)}"
+    url = f"{REUTERS_BASE}/app/feed/pictures?query={quote(query).replace('%20', '+')}"
     try:
-        await page.goto(url, timeout=30000, wait_until="domcontentloaded")
-        await asyncio.sleep(6)
-        links = await page.query_selector_all("a[href*='/item/']")
+        await page.goto(url, timeout=40000, wait_until="domcontentloaded")
+        await asyncio.sleep(8)
+        if "/login" in page.url:
+            log.error("Reuters Connect: LOGIN EXPIRED — run `python3 reuters_login.py` on the Mac to log in again")
+            return []
+        links = await page.query_selector_all("a[href*='/app/item/']")
         results = []
         seen_hrefs: set = set()
         for link in links[:60]:
             href = (await link.get_attribute("href") or "").split("?")[0]
-            if not href or href in seen_hrefs or "/item/" not in href:
+            if not href or href in seen_hrefs:
                 continue
             seen_hrefs.add(href)
-            parts = href.split("/item/", 1)[1].strip("/").split("/")
+            parts = href.split("/app/item/", 1)[1].strip("/").split("/")
             item_key = parts[-1]
-            slug = parts[0].replace("-", " ") if len(parts) > 1 else ""
+            slug = " ".join(p.replace("-", " ") for p in parts[:-1])
             img = await link.query_selector("img")
             alt = (await img.get_attribute("alt") or "").strip() if img else ""
             title = " — ".join(x for x in (alt, slug) if x) or query
@@ -676,12 +704,11 @@ async def scrape_reuters_connect(page: Page, query: str) -> list[dict]:
                 "url":   full,
             })
         if not results:
-            log.warning(f"Reuters Connect: 0 item links for '{query}' (page layout changed or blocked?)")
+            log.warning(f"Reuters Connect: 0 item links for '{query}' (page layout changed?)")
         return results
     except Exception as e:
         log.warning(f"Reuters Connect error for '{query}': {e}")
         return []
-
 
 # ── Scraper: Getty Images API (optional) ──────────────────────────────────────
 
@@ -739,6 +766,11 @@ async def run_checks(dry_run: bool, init_mode: bool):
         page = await ctx.new_page()
         await Stealth().apply_stealth_async(page)
 
+        reuters_ctx = await open_reuters_context(pw)
+        reuters_page = None
+        if reuters_ctx:
+            reuters_page = reuters_ctx.pages[0] if reuters_ctx.pages else await reuters_ctx.new_page()
+
         for person, cfg in PERSONS.items():
             key = person.replace(" ", "_")
             seen_ids: set = set(seen.get(key, []))
@@ -777,11 +809,12 @@ async def run_checks(dry_run: bool, init_mode: bool):
                 process(getty_results, "Getty Images")
                 await asyncio.sleep(3)
 
-                # -- Reuters Connect (Playwright) --
-                reuters_results = await scrape_reuters_connect(page, query)
-                log.info(f"  Reuters Connect: {len(reuters_results)} result(s)")
-                process(reuters_results, "Reuters Connect")
-                await asyncio.sleep(3)
+                # -- Reuters Connect (logged-in profile, Mac only) --
+                if reuters_page:
+                    reuters_results = await scrape_reuters_connect(reuters_page, query)
+                    log.info(f"  Reuters Connect: {len(reuters_results)} result(s)")
+                    process(reuters_results, "Reuters Connect")
+                    await asyncio.sleep(3)
 
                 # -- Imago (Playwright) --
                 imago_results = await scrape_imago(page, query)
@@ -852,6 +885,8 @@ async def run_checks(dry_run: bool, init_mode: bool):
 
             seen[key] = list(seen_ids)
 
+        if reuters_ctx:
+            await reuters_ctx.close()
         await browser.close()
 
     if not dry_run:
