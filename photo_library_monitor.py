@@ -219,8 +219,6 @@ def notify(person: str, source: str, count: int, dry_run: bool):
 
 async def scrape_imago(page: Page, query: str) -> list[dict]:
     url = f"https://www.imago-images.com/search?querystring={quote(query)}&category=all&sortby=date"
-    # Keywords that must appear in the image title/alt to be considered relevant
-    query_keywords = [w.lower() for w in query.split() if len(w) > 2]
     try:
         await page.goto(url, timeout=25000, wait_until="domcontentloaded")
         await asyncio.sleep(4)
@@ -234,10 +232,11 @@ async def scrape_imago(page: Page, query: str) -> list[dict]:
             seen_hrefs.add(href)
             img = await link.query_selector("img")
             alt = (await img.get_attribute("alt") or "").strip() if img else ""
-            # Only include if at least one keyword from the query appears in the title
-            if alt and not any(kw in alt.lower() for kw in query_keywords):
-                continue
-            title = alt or query
+            # Never fall back to the query as the title: the unaccented query
+            # ("Stephane Sejourne") fuzzy-matches other Stéphanes, and a not-yet-
+            # rendered thumbnail (empty alt) titled with the query would sail
+            # through is_relevant. Leave it empty → filtered, re-checked next run.
+            title = alt or (await link.get_attribute("title") or "").strip()
             full = f"https://www.imago-images.com{href}" if href.startswith("/") else href
             clean_href = href.split("?")[0]
             results.append({
@@ -873,6 +872,7 @@ async def run_checks(dry_run: bool, init_mode: bool, mac_only: bool = False):
                                 skipped += 1
                                 continue
                             _push_alert(person, source, item)
+                            log.info(f"    + {item['title'][:100]} → {item.get('url', '')}")
                             seen_ids.add(item["id"])
                             new_count += 1
                     if not init_mode and new_count > 0:
