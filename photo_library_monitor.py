@@ -83,6 +83,10 @@ NTFY_BASE = "https://ntfy.sh"
 # seen silently. Comfortably covers monitor downtime without re-spamming backlog.
 EP_NOTIFY_DAYS = 14
 
+# EU AV: keep diffing a reportage's photos (alert when new photos of him are
+# added to an already-notified event) for this many days after the shoot date.
+EU_AV_TRACK_DAYS = 14
+
 # Marker in seen["_migrations"]: EU AV ids are keyed on the base ref (see _eu_av_id).
 EU_AV_ID_MIGRATION = "eu_av_base_ref_ids"
 
@@ -333,14 +337,13 @@ def scrape_flickr_reneweurope(query: str) -> list[dict]:
 
 # ── Scraper: EU Audiovisual Service ──────────────────────────────────────────
 
-def _eu_av_scan_reportage_photos(api_url: str, base_ref: str, n_photos: int,
-                                  search_terms: list) -> bool:
-    """Fetch all individual photos for a reportage by enumerating refs in parallel.
+def _eu_av_scan_reportage_photos(api_url: str, base_ref: str, n_photos: int) -> dict | None:
+    """Fetch the caption of every photo in a reportage, in parallel.
 
-    Uses ThreadPoolExecutor to query each photo ref concurrently.
-    Returns True if any photo caption contains a search term.
+    Returns {photo_num: lowercased caption}, or None if any request failed —
+    a partial scan must not be mistaken for "photos 40-78 are new" next run.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor
 
     def fetch_caption(photo_num: int):
         ref = f"{base_ref}/00-{photo_num:02d}"
@@ -348,19 +351,27 @@ def _eu_av_scan_reportage_photos(api_url: str, base_ref: str, n_photos: int,
             r = requests.get(api_url, params={"fl": "summary_json", "wt": "json", "ref": ref},
                              timeout=8)
             docs = r.json().get("response", {}).get("docs", [])
-            if docs:
-                return unescape(str(docs[0].get("summary_json", "") or "")).lower()
         except Exception:
-            pass
+            return None
+        if docs:
+            return unescape(str(docs[0].get("summary_json", "") or "")).lower()
         return ""
 
     with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = {pool.submit(fetch_caption, i): i for i in range(1, n_photos + 1)}
-        for future in as_completed(futures):
-            caption = future.result()
-            if caption and any(t in caption for t in search_terms):
-                return True
-    return False
+        captions = list(pool.map(fetch_caption, range(1, n_photos + 1)))
+    if any(c is None for c in captions):
+        return None
+    return {i: c for i, c in enumerate(captions, 1)}
+
+
+def _eu_av_child_count(api_url: str, base_ref: str) -> int:
+    try:
+        r = requests.get(api_url, params={"fl": "childobjects", "wt": "json",
+                                          "ref": base_ref, "type": "REPORTAGE"}, timeout=8)
+        docs = r.json().get("response", {}).get("docs", [])
+        return int((docs[0].get("childobjects") or 0) if docs else 0)
+    except Exception:
+        return 0
 
 
 def eu_av_download_photos(base_ref: str, search_terms: list, shoot_date: str = "", title: str = "") -> int:
@@ -454,7 +465,7 @@ def _eu_av_id(base_ref: str) -> str:
     return make_id("eu_av", f"base|{base_ref}")
 
 
-def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
+def scrape_eu_audiovisual(search_terms: list, person_id=None, photo_terms=None) -> list[dict]:
     """EU Audiovisual Service API — no browser needed.
 
     Pass 1 — REPORTAGE / VIDEO / PHOTO (top 100 each):
@@ -465,7 +476,19 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
       parallel and check captions. Catches group events (e.g. weekly College
       meetings) where individual photo captions name the person but the reportage
       title/tags do not.
+
+    Photo tracking — for matched photo reportages shot in the last
+    EU_AV_TRACK_DAYS days, every caption is scanned and the result gets
+    "eu_av_photos": the photo numbers whose caption matches photo_terms (his
+    name; Renew-Europe-only captions don't count). run_checks diffs this against
+    the previous run to alert when photos of him are added to a known event.
+    Key absent = not scanned (too old / video / scan error): no diff that run.
     """
+    import datetime as _dt
+    if photo_terms is None:
+        photo_terms = [t for t in search_terms if t != "renew europe"]
+    track_since = (_dt.date.today() - _dt.timedelta(days=EU_AV_TRACK_DAYS)).strftime("%Y%m%d")
+    captions_by_ref: dict = {}
     AV_API = "https://gfdwwnbuul.execute-api.eu-west-1.amazonaws.com/avsportal/avsportal"
     PORTAL_PHOTO = "https://audiovisual.ec.europa.eu/en/media/photo"
     PORTAL_VIDEO = "https://audiovisual.ec.europa.eu/en/media/video"
@@ -475,7 +498,7 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
         # ── Pass 1: standard type queries ────────────────────────────────────
         for media_type in ["REPORTAGE", "PHOTO", "VIDEO"]:
             params = {
-                "fl": "type,ref,doc_ref,titles_json,shootstartdate,summary_json,pers_json",
+                "fl": "type,ref,doc_ref,titles_json,shootstartdate,summary_json,pers_json,childobjects",
                 "hasMedia": 1, "wt": "json", "index": 1,
                 "pagesize": 100, "type": media_type,
             }
@@ -509,11 +532,12 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
                     "id": _eu_av_id(doc_ref), "title": title, "url": url,
                     "eu_av_base_ref": doc_ref,
                     "eu_av_date": str(doc.get("shootstartdate", ""))[:8],
+                    "eu_av_n": int(doc.get("childobjects") or 0) if media_type == "REPORTAGE" else 0,
                 })
 
         # ── Pass 2: exhaustive per-photo caption scan for unmatched REPORTAGEs ─
         rep_params = {
-            "fl": "ref,childobjects,titles_json",
+            "fl": "ref,childobjects,titles_json,shootstartdate",
             "hasMedia": 1, "wt": "json", "index": 1,
             "pagesize": 20, "type": "REPORTAGE",
         }
@@ -526,7 +550,10 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
             n_photos = int(doc.get("childobjects") or 0)
             if n_photos < 1:
                 continue
-            if _eu_av_scan_reportage_photos(AV_API, base_ref, n_photos, search_terms):
+            captions = _eu_av_scan_reportage_photos(AV_API, base_ref, n_photos)
+            if captions is not None:
+                captions_by_ref[base_ref] = captions
+            if captions and any(t in c for c in captions.values() for t in search_terms):
                 titles = doc.get("titles_json", {}) or {}
                 title = clean_html(next(iter(titles.values()), base_ref))
                 url = f"{PORTAL_PHOTO}/{base_ref}"
@@ -537,9 +564,28 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
                     "confirmed_match": True,  # found via caption scan, skip title filter
                     "eu_av_base_ref":  base_ref,
                     "eu_av_date":      str(doc.get("shootstartdate", ""))[:8],
+                    "eu_av_n":         n_photos,
                 })
                 matched_doc_refs.add(base_ref)
                 log.info(f"  EU AV pass-2 match: {base_ref} ({title[:50]})")
+
+        # ── Photo tracking: which photos of each recent reportage show him ──
+        for item in results:
+            base_ref = item["eu_av_base_ref"]
+            if not base_ref.startswith("P-") or item["eu_av_date"] < track_since:
+                continue
+            captions = captions_by_ref.get(base_ref)
+            if captions is None:
+                n_photos = item.get("eu_av_n") or _eu_av_child_count(AV_API, base_ref)
+                if n_photos < 1:
+                    continue
+                captions = _eu_av_scan_reportage_photos(AV_API, base_ref, n_photos)
+                if captions is None:
+                    log.info(f"  EU AV: caption scan of {base_ref} incomplete, skipping photo diff")
+                    continue
+                captions_by_ref[base_ref] = captions
+            item["eu_av_photos"] = sorted(
+                n for n, c in captions.items() if any(t in c for t in photo_terms))
 
     except Exception as e:
         log.warning(f"EU AV error: {e}")
@@ -957,34 +1003,65 @@ async def run_checks(dry_run: bool, init_mode: bool, mac_only: bool = False):
                     if eu_migrating and eu_results:  # empty = API failure; retry next run
                         log.info("  EU Audiovisual: seeding base-ref ids silently (one-time migration)")
                         seen.setdefault("_migrations", []).append(EU_AV_ID_MIGRATION)
+                    # Photo numbers of him per reportage, from the last run that
+                    # scanned it. Diffing against it alerts when photos of him are
+                    # added to an already-notified event (EU AV keeps extending
+                    # reportages for days); photos of others never alert.
+                    photo_map = seen.setdefault("_eu_av_photos", {})
                     for item in eu_results:
-                        if item["id"] not in seen_ids:
+                        base_ref = item["eu_av_base_ref"]
+                        photos = item.get("eu_av_photos")   # None = not scanned this run
+                        known = photo_map.get(base_ref)     # None = no baseline yet
+                        is_new = item["id"] not in seen_ids
+                        added = [n for n in photos if n not in known] if photos is not None and known is not None else []
+                        if photos is not None:
+                            photo_map[base_ref] = sorted(set(known or []) | set(photos))
+                        if init_mode or eu_migrating:
                             seen_ids.add(item["id"])
-                            if not init_mode and not eu_migrating:
-                                notify_direct(person, "EU Audiovisual", item["title"], item["url"], dry_run)
-                                _push_alert(person, "EU Audiovisual", item)
-                                total_new += 1
-                                # Auto-download photos to Mac (skipped on CI and dry-run)
-                                if item.get("eu_av_base_ref") and not dry_run and not os.environ.get("GITHUB_ACTIONS"):
-                                    # Download only Séjourné's own photos, never
-                                    # Renew-Europe-only group events (notify only).
-                                    download_terms = [t for t in eu_terms if t != "renew europe"]
-                                    n_dl = eu_av_download_photos(
-                                        item["eu_av_base_ref"],
-                                        download_terms,
-                                        shoot_date=item.get("eu_av_date", ""),
-                                        title=item.get("title", ""),
+                            continue
+                        if is_new:
+                            seen_ids.add(item["id"])
+                            title = item["title"]
+                            if photos:
+                                title += f" ({len(photos)} 张有他)"
+                        elif added:
+                            nums = "、".join(str(n) for n in added[:10]) + ("…" if len(added) > 10 else "")
+                            title = f"新增 {len(added)} 张有他(第 {nums} 张): {item['title']}"
+                            log.info(f"  EU AV: {base_ref} +{len(added)} photo(s) of him: {added}")
+                        else:
+                            continue
+                        notify_direct(person, "EU Audiovisual", title, item["url"], dry_run)
+                        _push_alert(person, "EU Audiovisual", item)
+                        total_new += 1
+                        # Auto-download photos to Mac (skipped on CI and dry-run);
+                        # already-downloaded files are skipped, so on an update
+                        # this fetches just the added ones.
+                        if not dry_run and not os.environ.get("GITHUB_ACTIONS"):
+                            # Download only Séjourné's own photos, never
+                            # Renew-Europe-only group events (notify only).
+                            download_terms = [t for t in eu_terms if t != "renew europe"]
+                            n_dl = eu_av_download_photos(
+                                base_ref,
+                                download_terms,
+                                shoot_date=item.get("eu_av_date", ""),
+                                title=item.get("title", ""),
+                            )
+                            if n_dl > 0:
+                                try:
+                                    _ntfy_post(
+                                        cfg["topic"],
+                                        f"EU AV downloaded: {n_dl} photo(s)",
+                                        f"{n_dl} 张照片已保存到 ~/Pictures/Séjourné_EU_AV/\n{item.get('title', '')}",
+                                        item["url"],
                                     )
-                                    if n_dl > 0:
-                                        try:
-                                            _ntfy_post(
-                                                cfg["topic"],
-                                                f"EU AV downloaded: {n_dl} photo(s)",
-                                                f"{n_dl} 张照片已保存到 ~/Pictures/Séjourné_EU_AV/\n{item.get('title', '')}",
-                                                item["url"],
-                                            )
-                                        except Exception as e:
-                                            log.warning(f"download notify error: {e}")
+                                except Exception as e:
+                                    log.warning(f"download notify error: {e}")
+                    # Forget reportages that dropped out of the feed (an empty
+                    # result list means the API failed — keep everything then).
+                    if eu_results:
+                        current = {i["eu_av_base_ref"] for i in eu_results}
+                        for ref in [r for r in photo_map if r not in current]:
+                            del photo_map[ref]
 
                 # -- EP Multimedia Centre (Séjourné only, Playwright) --
                 # The search returns the newest ~18 photosets regardless of age
