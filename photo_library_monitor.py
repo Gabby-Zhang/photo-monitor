@@ -83,6 +83,9 @@ NTFY_BASE = "https://ntfy.sh"
 # seen silently. Comfortably covers monitor downtime without re-spamming backlog.
 EP_NOTIFY_DAYS = 14
 
+# Marker in seen["_migrations"]: EU AV ids are keyed on the base ref (see _eu_av_id).
+EU_AV_ID_MIGRATION = "eu_av_base_ref_ids"
+
 # EU AV auto-download config (only runs locally on Mac, not on GitHub Actions)
 EU_AV_CDN        = "https://ec.europa.eu/avservices/avs/files/video6/repository/prod/photo/store"
 EU_AV_DOWNLOAD_DIR = Path.home() / "Pictures" / "Séjourné_EU_AV"
@@ -439,6 +442,18 @@ def eu_av_download_photos(base_ref: str, search_terms: list, shoot_date: str = "
     return downloaded
 
 
+def _eu_av_id(base_ref: str) -> str:
+    """Seen-id for an EU AV event, keyed on the bare base ref (e.g. P-070821).
+
+    Never key on the full REPORTAGE `ref`: its `/00-NN` suffix is the current
+    cover photo, which EU AV changes as it edits/extends the reportage — every
+    change minted a new id and re-notified the same event (the 27/10/2026
+    College meeting P-070821 kept coming back). One id per base ref also stops
+    the REPORTAGE / PHOTO / pass-2 paths from notifying the same event 2-3 times.
+    """
+    return make_id("eu_av", f"base|{base_ref}")
+
+
 def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
     """EU Audiovisual Service API — no browser needed.
 
@@ -490,9 +505,8 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
 
                 url = f"{PORTAL_VIDEO}/{doc_ref}" if media_type == "VIDEO" else f"{PORTAL_PHOTO}/{doc_ref}"
                 title = clean_html(next(iter(titles.values()), ref))
-                id_key = f"eu_av_photo|{doc_ref}" if media_type == "PHOTO" else ref
                 results.append({
-                    "id": make_id("eu_av", id_key), "title": title, "url": url,
+                    "id": _eu_av_id(doc_ref), "title": title, "url": url,
                     "eu_av_base_ref": doc_ref,
                     "eu_av_date": str(doc.get("shootstartdate", ""))[:8],
                 })
@@ -517,7 +531,7 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None) -> list[dict]:
                 title = clean_html(next(iter(titles.values()), base_ref))
                 url = f"{PORTAL_PHOTO}/{base_ref}"
                 results.append({
-                    "id":              make_id("eu_av", f"eu_av_scan|{base_ref}"),
+                    "id":              _eu_av_id(base_ref),
                     "title":           title,
                     "url":             url,
                     "confirmed_match": True,  # found via caption scan, skip title filter
@@ -936,10 +950,17 @@ async def run_checks(dry_run: bool, init_mode: bool, mac_only: bool = False):
                 if eu_terms:
                     eu_results = scrape_eu_audiovisual(eu_terms, person_id=cfg.get("eu_av_person_id"))
                     log.info(f"  EU Audiovisual: {len(eu_results)} result(s)")
+                    # First run after the switch to base-ref ids: every current
+                    # result has a fresh id, so seed them silently instead of
+                    # re-notifying ~100 known events.
+                    eu_migrating = EU_AV_ID_MIGRATION not in seen.get("_migrations", [])
+                    if eu_migrating and eu_results:  # empty = API failure; retry next run
+                        log.info("  EU Audiovisual: seeding base-ref ids silently (one-time migration)")
+                        seen.setdefault("_migrations", []).append(EU_AV_ID_MIGRATION)
                     for item in eu_results:
                         if item["id"] not in seen_ids:
                             seen_ids.add(item["id"])
-                            if not init_mode:
+                            if not init_mode and not eu_migrating:
                                 notify_direct(person, "EU Audiovisual", item["title"], item["url"], dry_run)
                                 _push_alert(person, "EU Audiovisual", item)
                                 total_new += 1

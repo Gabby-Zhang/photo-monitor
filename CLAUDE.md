@@ -103,6 +103,8 @@ GitHub Actions secrets 与上述同名。
 
 EU AV 自动下载仅本机运行（检测 `GITHUB_ACTIONS` env 跳过），下载到 `~/Pictures/Séjourné_EU_AV/{ref}_{date}_{title}/`，取 `media_json["ORIGINAL"].PATH` 最高规格，下载前校验 `content-type` 以 `image` 开头（CDN 可能返回 200 + HTML 假图）。
 
+**EU AV 去重 id 只用基础 ref(2026-10 修)**:REPORTAGE 的 `ref` 形如 `P-070821/00-06`,`/00-NN` 是**当前封面照**,欧委会编辑/追加照片时会变 → 旧代码拿整个 `ref` 做 id,封面一换就当新活动再推(27/10 学院例会反复推送即此)。现在 REPORTAGE / PHOTO / Pass 2 三条路径统一用 `_eu_av_id(base_ref)`,同一活动只推一次。换 id 那次首跑靠 `seen["_migrations"]` 标记把当前结果静默入库(API 返回空时不打标记,下次再试)。
+
 **Renew Europe 群体活动（只通知不下载）**：`eu_av_terms` 含 `"renew europe"`，用于捕捉标题/摘要点名 Renew Europe 群组、但不含 Séjourné 本人名字的活动（如领导人会前会、欧理会前碰头，video 示例 `I-290823`）。这类只推通知，**不自动下载**：`run_checks` 里调 `eu_av_download_photos` 前会把 `"renew europe"` 从词表里剔除（`download_terms`），下载函数逐张扫 caption 找他名字，群体照片里没他名字自然下 0 张；他本人的照片照常下载。改 `eu_av_terms` 时注意保持这层「匹配词 ⊇ 下载词」的关系。
 
 ## 关键约定与已知坑
