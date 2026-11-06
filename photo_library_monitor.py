@@ -102,6 +102,7 @@ PERSONS = {
         "topic":   "photo-alert-gabriel",
         "queries": ["Gabriel Attal"],
         "must_contain": ["attal"],
+        "consilium_query": "Gabriel Attal",
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=gabriel+attal&sort=newest",
             "Reuters Connect":    "https://www.reutersconnect.com/app/feed/pictures?query=Gabriel+Attal",
@@ -109,6 +110,7 @@ PERSONS = {
             "Imago Images":       "https://www.imago-images.com/search?querystring=Gabriel+Attal&category=all&sortby=date",
             "Alamy":              "https://www.alamy.com/stock-photo/gabriel-attal.html?sortBy=newest",
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
+            "Council Newsroom":   "https://newsroom.consilium.europa.eu/photos?keywords=Gabriel%20Attal",
         },
     },
     "Stéphane Séjourné": {
@@ -120,6 +122,8 @@ PERSONS = {
         "eu_av_terms": ["séjourn", "sejourn", "renew europe"],
         "eu_av_person_id": 241448,   # EU AV internal person ID for Stéphane Séjourné
         "ep_multimedia_person_id": 14399,
+        # Council newsroom search ignores accents: "Séjourné" returns nothing
+        "consilium_query": "Sejourne",
         "search_urls": {
             "Getty Images":       "https://www.gettyimages.co.uk/search/2/image?family=editorial&phrase=stephane+sejourne&sort=newest",
             "Reuters Connect":    "https://www.reutersconnect.com/app/feed/pictures?query=St%C3%A9phane+S%C3%A9journ%C3%A9",
@@ -129,6 +133,7 @@ PERSONS = {
             "Flickr RenewEurope": "https://www.flickr.com/photos/reneweuropegroup/",
             "EU Audiovisual":     "https://audiovisual.ec.europa.eu/en/search?mediaType=REPORTAGE&sortField=search_date&sortFieldDirection=desc&groupedGenres=NEWS",
             "EP Multimedia":      "https://multimedia.europarl.europa.eu/en/search?tab=photos&person=14399&photoType=25&orderBy=newest&page=1",
+            "Council Newsroom":   "https://newsroom.consilium.europa.eu/photos?keywords=Stephane%20sejourne",
         },
     },
 }
@@ -334,6 +339,66 @@ def scrape_flickr_reneweurope(query: str) -> list[dict]:
     except Exception as e:
         log.warning(f"Flickr error for '{query}': {e}")
         return []
+
+# ── Scraper: Council of the EU Newsroom ──────────────────────────────────────
+
+CONSILIUM_API  = "https://newsroomapi.consilium.europa.eu/api/photos"
+CONSILIUM_SITE = "https://newsroom.consilium.europa.eu"
+
+
+def scrape_consilium(query: str, person: str) -> list[dict]:
+    """Council newsroom photo search via its public JSON API (no browser).
+
+    The API returns single photos; one meeting is one gallery of many photos,
+    so results are grouped by galleryId (one alert per gallery, like EP
+    Multimedia photosets). The keyword search ignores accents ("Séjourné"
+    returns 0, "Sejourne" works), and captions write names in caps
+    ("Stéphane SEJOURNE"), so each photo is re-checked with is_relevant on its
+    full caption + tags. Each item carries "date" (YYYY-MM-DD) for the
+    backlog window in run_checks.
+    """
+    try:
+        r = requests.get(
+            CONSILIUM_API,
+            params={"pagesize": 100, "page": 1, "keywords": query,
+                    "orderBy": "date", "orderDirection": "descending"},
+            headers={"User-Agent": UA, "Accept": "application/json"},
+            timeout=20,
+        )
+        r.raise_for_status()
+        photos = r.json().get("data", []) or []
+    except Exception as e:
+        log.warning(f"Council Newsroom error for '{query}': {e}")
+        return []
+
+    galleries: dict = {}
+    for p in photos:
+        text = " ".join([p.get("caption") or ""] + [str(t) for t in (p.get("tags") or [])])
+        gid = p.get("galleryId")
+        if not gid or not is_relevant(text, person):
+            continue
+        g = galleries.get(gid)
+        if g is None:
+            ev = p.get("linkedEvent") or {}
+            if ev.get("urlName") and p.get("galleryUrlSegment"):
+                url = f"{CONSILIUM_SITE}/events/{ev['urlName']}/{p['galleryUrlSegment']}/{p.get('uniqueId', '')}"
+            else:
+                url = f"{CONSILIUM_SITE}/photos?keywords={quote(query)}"
+            head = ev.get("title") or p.get("galleryTitle") or ""
+            desc = p.get("galleryDescription") or ""
+            title = f"{head} — {desc}" if desc and desc != head else head
+            g = galleries[gid] = {
+                "id":    make_id("consilium", gid),
+                "title": title or (p.get("caption") or "")[:150],
+                "url":   url,
+                "date":  str(p.get("date", ""))[:10],
+                "n":     0,
+            }
+        g["n"] += 1
+    for g in galleries.values():
+        g["title"] += f" ({g['n']} 张)"
+    return list(galleries.values())
+
 
 # ── Scraper: EU Audiovisual Service ──────────────────────────────────────────
 
@@ -1091,6 +1156,34 @@ async def run_checks(dry_run: bool, init_mode: bool, mac_only: bool = False):
                             ep_seeded += 1
                     if ep_seeded:
                         log.info(f"  EP Multimedia: {ep_seeded} old photoset(s) seeded silently (backlog)")
+
+                # -- Council of the EU Newsroom (JSON API, no browser) --
+                # Once per person: one dedicated accent-free query. One alert per
+                # gallery (= one meeting/bilateral). Galleries older than
+                # EP_NOTIFY_DAYS are seeded silently, so the first run doesn't
+                # replay years of Council meetings.
+                cons_query = cfg.get("consilium_query")
+                if cons_query and query == cfg["queries"][0]:
+                    import datetime as _dt
+                    cons_cutoff = (_dt.date.today() - _dt.timedelta(days=EP_NOTIFY_DAYS)).isoformat()
+                    cons_results = scrape_consilium(cons_query, person)
+                    log.info(f"  Council Newsroom: {len(cons_results)} gallery(ies)")
+                    cons_seeded = 0
+                    for item in cons_results:
+                        if item["id"] in seen_ids:
+                            continue
+                        if init_mode or (item["date"] and item["date"] < cons_cutoff):
+                            seen_ids.add(item["id"])
+                            cons_seeded += not init_mode
+                            continue
+                        # Notify first, then mark seen (see 通知顺序 in CLAUDE.md)
+                        notify_direct(person, "Council Newsroom", item["title"], item["url"], dry_run)
+                        _push_alert(person, "Council Newsroom", item)
+                        log.info(f"    + {item['title'][:100]} → {item['url']}")
+                        seen_ids.add(item["id"])
+                        total_new += 1
+                    if cons_seeded:
+                        log.info(f"  Council Newsroom: {cons_seeded} old gallery(ies) seeded silently (backlog)")
 
                 # -- Getty API (optional) --
                 if GETTY_API_KEY:
