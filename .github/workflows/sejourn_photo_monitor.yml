@@ -1,0 +1,42 @@
+name: Séjourné EU AV Monitor (cloud fallback)
+
+# Primary runner for this monitor is now a Windows PC (Task Scheduler), which
+# can stay on 24/7 and refreshes sejourn_photo_monitor.heartbeat.json on every
+# successful run. This workflow only takes over when that heartbeat goes
+# stale (PC off/asleep/disconnected) — see scripts/run_sejourn_photo_monitor.py
+# and CLAUDE.md ("EU AV 监控：Windows 常驻 + 云端兜底").
+
+on:
+  schedule:
+    - cron: '7 * * * *'   # hourly, :07 past the hour — no browser needed, cheap to run every time
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sejourn-photo-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run monitor if the Windows PC's heartbeat is stale
+        run: |
+          git config user.email "automation@sa-archive.local"
+          git config user.name "photo-monitor-bot"
+          python3 scripts/run_sejourn_photo_monitor.py --role cloud --threshold-minutes 100

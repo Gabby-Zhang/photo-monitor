@@ -42,10 +42,34 @@ ICS 的 UID 用 `md5(date|title)` **确定性**生成（不能用 `hash()`，Pyt
 - **GitHub Actions `photo_monitor.yml`** → `photo_library_monitor.py`，工作日 9:00–18:00 巴黎时间每小时一次，其余时段每 3 小时一次；支持 `init_mode` 手动触发。cron 写的是 UTC，按巴黎夏令时(CEST=UTC+2)映射(07:00–16:00 UTC)；冬令时(CET=UTC+1)会整体偏移一小时，需手动调
   - **斯特拉斯堡 EP 全会周加频**：全会那 4 天(周一–周四)白天时段提频到**每 20 分钟一次**(07:00–18:00 UTC ≈ 巴黎 09:00–20:00)——大全会日单天 30-50+ 张,60 条上限会漏。用 `day-of-month + month` 精确命中会期(cron 无年份字段,写死的是 **2026** 日期,每年会漂移约一周,需按官方 EP 日历手动更新)。2026 会期:1/19-22、2/9-12、3/9-12、4/27-30、5/18-21、6/15-18、7/6-9、9/14-17、10/5-8、10/19-22、11/23-26、12/14-17(已过的月份 cron 仍留着,明年复用前记得改)。加频后每逢整点 hourly 与 30min 两个 schedule 会撞,靠 workflow 顶部 `concurrency: {group: photo-monitor, cancel-in-progress: false}` 串行化,避免两个 worker 同读 seen.json 各推一遍(cache 按 run_id 存)
 - **GitHub Actions `welcome_email.yml`** → `welcome_email.py`，`subscribers.json` 有 push 时自动触发
-- **Mac launchd `com.sejourn.photo-monitor.plist`** → `sejourn_photo_monitor.py`，**工作日** 9:00–18:00 每整点。plist 用 `/bin/bash -c 'dow=$(date +%u); [ "$dow" -le 5 ] &amp;&amp; /usr/bin/python3 …'` 限工作日——**plist 里 `&&` 必须写成 `&amp;&amp;`**,裸 `&&` launchd 能容忍但 `plutil`/`PlistBuddy` 拒读、改不了。2026-10 修:原用 `/bin/sh`(无完全磁盘访问 → `Operation not permitted`,退出码 2)、日志在 `~/Documents`,改为 `/bin/bash` + 日志 `~/Library/Logs/sejourn-photo-monitor.log`;另修 ntfy `Title` 含 `—` 导致 `UnicodeEncodeError`(见下方「HTTP 头只能用 ASCII」)。`sejourn_photo_monitor.py` 已改为**先发通知、成功才写 state**(原先先写后发,一次通知崩溃丢了 12 条);通知失败则 `exit 1`、下个整点重试。2026-10 起纳入仓库(之前只在 Mac 上)
-- **Mac launchd `com.photomonitor.attal-sejourne.plist`** → `photo_library_monitor.py --reuters-only`(= `--mac-only` 的旧名,保留兼容 plist)，每 3 小时。**只跑本机专属源:Reuters(需本机登录态)+ Shutterstock(Akamai 封云端 IP)**;其余源由 GitHub Actions 负责——本机和云端 seen 文件各自独立,两边都跑会让每张新图推两次。plist 现为 `/bin/bash -c "<CLT python3> …/photo_library_monitor.py --reuters-only"`。**`~/Documents` 受 TCC 保护的两个坑(2026-10 修,此前自 7 月起本机任务一直没跑成、seen 文件停在 7/7):① plist 的 `StandardOutPath`/`StandardErrorPath` 由 launchd 自己打开,指向 `~/Documents` 就直接 `78: EX_CONFIG`,脚本一行都不跑——已挪到 `~/Library/Logs/photo-monitor-launchd.log`;② 脚本本身读写 `~/Documents` 靠给 `/bin/bash` 开「完全磁盘访问」。** 验证:`launchctl kickstart -k gui/$(id -u)/com.photomonitor.attal-sejourne`,`launchctl list | grep photomonitor` 退出码应为 0
+- ~~Mac launchd `com.sejourn.photo-monitor.plist`~~ / ~~`com.photomonitor.attal-sejourne.plist`~~ — **2026-11 退役,搬到 Windows 常开机器,见下一节**。历史坑(plist `&&` 要写 `&amp;&amp;`、`~/Documents` 的 TCC 完全磁盘访问、ntfy `Title` 非 ASCII 的 `UnicodeEncodeError`)仅供查阅旧 Mac 配置时参考,新机器不会再踩
 
 改了 plist 要 `launchctl unload ~/Library/LaunchAgents/<name>.plist && launchctl load ...`；改脚本不需要重载。
+
+## Windows 常开机器 + 云端兜底(2026-11 起,取代 Mac launchd)
+
+用户的 Mac 不再常开,**本机专属任务改到一台可以一直开着的 Windows 电脑**,用 Windows 任务计划程序(Task Scheduler)代替 launchd。两类任务:
+
+- **`photo_library_monitor.py --mac-only`(Reuters Connect + Shutterstock Editorial)**:**必须**在这台 Windows 机器上跑,架构性原因搬不到云端——Reuters 需要持久登录态的浏览器 profile(`~/.reuters_connect_profile`,`reuters_login.py` 手动登录一次,含设备验证/2FA,只能人工过);Shutterstock 被 Akamai 按数据中心 IP 封(GitHub Actions 直接 403),只有家庭/住宅 IP 能过。**没有、也不可能有云端兜底**——Windows 机器关机期间这两个源就是空窗,和以前 Mac 关机时一样。去重用的 `photo_library_seen.json` **留在本机、不进 git**(和原来 Mac 上一样,与云端的 seen 缓存各自独立,两边都跑会重复推送)。Task Scheduler 直接指向包装脚本(内含 `git pull` 保持代码最新再运行):
+  ```
+  程序: python.exe
+  参数: <repo>\scripts\run_photo_library_monitor_mac_only.py
+  触发器: 每 3 小时(对齐原 Mac 频率,可自行调更勤)
+  ```
+- **`sejourn_photo_monitor.py`(EU AV 监控)**:这个脚本纯 HTTP(`requests`),不需要浏览器/登录,**天然可以云端兜底**——用户要求「Windows 关机时云端顶上」,实现方式见下。Task Scheduler:
+  ```
+  程序: python.exe
+  参数: <repo>\scripts\run_sejourn_photo_monitor.py --role windows
+  触发器: 每小时(对齐原 Mac 工作日 9-18 频率,也可按需调整/全天跑)
+  ```
+
+### 心跳式云端兜底(`scripts/run_sejourn_photo_monitor.py` + `.github/workflows/sejourn_photo_monitor.yml`)
+
+- 两边共享同一份去重状态 `photo_sync_state.json`,**靠 git 提交同步**(主动纳入版本控制,别加进 `.gitignore`)。包装脚本每次成功跑完都会刷新 `sejourn_photo_monitor.heartbeat.json`(`{"last_run_utc": ..., "runner": "windows"/"cloud"}`)并 `git add` 两个文件一起 commit + push(无变化则不提交)
+- **谁先跑看心跳,不是两边都跑**:`--role windows` 每次无条件跑;`--role cloud`(GitHub Actions,每小时 `:07`)先读心跳,**新鲜(< 100 分钟)就什么都不做直接退出**——认为 Windows 机器还活着,不重复跑、不重复推送。心跳过期(Windows 关机/断网/任务没触发)才真正跑一次,顺手把心跳接过来,直到 Windows 恢复、重新开始刷新心跳为止
+- **push 冲突重试一次**(`git pull --rebase` 后重 push):正常情况下只有一边在跑,几乎不会撞,但留了兜底
+- **已知限制**:`sejourn_photo_monitor.py` 里的 `push_to_github()`(把 Markdown 日志写进 `Gabby-Zhang/sejourn-calendar` 仓库)依赖本机 `~/bin/gh` + 其登录态,在 GitHub Actions 的 ubuntu runner 上找不到会直接跳过("gh CLI not found — skipping GitHub push")——云端兜底期间这份 Markdown 日志不会更新,等 Windows 恢复后才补上;**ntfy 推送不受影响**,该收到的通知照常收到
+- 阈值(100 分钟)和双方跑的频率(建议都定在 1 小时左右)要配合:阈值必须明显大于一次正常间隔,否则 Windows 只是单次运行慢了点就被云端误判成"关机"而抢着跑(无害,只是多跑一次,但没必要)
 
 ## 运行命令
 

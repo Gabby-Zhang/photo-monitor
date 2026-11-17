@@ -1,2 +1,10 @@
 __pycache__/
 *.pyc
+*.log
+
+# Local-only dedup state (Reuters/Shutterstock on the Windows PC; separate
+# from GitHub Actions' cached photo_library_seen.json). Do NOT add
+# photo_sync_state.json / sejourn_photo_monitor.heartbeat.json here — those
+# are intentionally git-tracked so the Windows PC and the cloud-fallback
+# workflow share the same EU AV monitor state (see CLAUDE.md).
+photo_library_seen.json

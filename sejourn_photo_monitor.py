@@ -253,13 +253,15 @@ def send_notification(new_items: list) -> bool:
     if count > 5:
         body += f"\n…and {count - 5} more"
 
-    # macOS system notification
-    mac_script = (
-        f'display notification "{_osa_quote(new_items[0]["title"][:80])}" '
-        f'with title "Séjourné AV" '
-        f'subtitle "{_osa_quote(subject)}"'
-    )
-    subprocess.run(["osascript", "-e", mac_script], capture_output=True)
+    # macOS system notification (Mac only — osascript doesn't exist on
+    # Windows/Linux, where this now also runs via Task Scheduler / GitHub Actions)
+    if sys.platform == "darwin":
+        mac_script = (
+            f'display notification "{_osa_quote(new_items[0]["title"][:80])}" '
+            f'with title "Séjourné AV" '
+            f'subtitle "{_osa_quote(subject)}"'
+        )
+        subprocess.run(["osascript", "-e", mac_script], capture_output=True)
 
     # ntfy.sh push notification
     if not NTFY_TOPIC:
