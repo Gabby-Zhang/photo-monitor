@@ -8,3 +8,7 @@ __pycache__/
 # are intentionally git-tracked so the Windows PC and the cloud-fallback
 # workflow share the same EU AV monitor state (see CLAUDE.md).
 photo_library_seen.json
+.reuters_login_expired_alerted
+
+# Secrets for the Windows wrapper scripts (TELEGRAM_BOT_TOKEN, SUPABASE_*, ...)
+.env

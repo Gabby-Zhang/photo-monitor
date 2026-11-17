@@ -63,6 +63,10 @@ ICS 的 UID 用 `md5(date|title)` **确定性**生成（不能用 `hash()`，Pyt
   触发器: 每小时(对齐原 Mac 工作日 9-18 频率,也可按需调整/全天跑)
   ```
 
+### 密钥:`.env`(仿 Mac launchd 那套,Task Scheduler 不能信任继承环境变量)
+
+`scripts/_env.py` 是个极简 `.env` 加载器,两个 Windows 包装脚本启动时都会读仓库根目录的 `.env`(不进 git,`.gitignore` 已排除)。原因同 Mac 那边的 launchd `.env`:`Task Scheduler`「不管用户是否登录都运行」模式下不保证能拿到用户会话设的环境变量,所以密钥(`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`,要用 Supabase 的话还有 `SUPABASE_URL`/`SUPABASE_SERVICE_KEY`)直接写本机 `.env` 文件最省心。格式就是 `KEY=value` 一行一个。
+
 ### 心跳式云端兜底(`scripts/run_sejourn_photo_monitor.py` + `.github/workflows/sejourn_photo_monitor.yml`)
 
 - 两边共享同一份去重状态 `photo_sync_state.json`,**靠 git 提交同步**(主动纳入版本控制,别加进 `.gitignore`)。包装脚本每次成功跑完都会刷新 `sejourn_photo_monitor.heartbeat.json`(`{"last_run_utc": ..., "runner": "windows"/"cloud"}`)并 `git add` 两个文件一起 commit + push(无变化则不提交)
@@ -109,7 +113,7 @@ pip3 install -r french_polls/requirements.txt              # 民调
 
 ## 环境变量
 
-ANTHROPIC_API_KEY、TELEGRAM_BOT_TOKEN、TELEGRAM_CHAT_ID、GMAIL_USER、GMAIL_APP_PASSWORD、GETTY_API_KEY（可选）、SUPABASE_URL / SUPABASE_SERVICE_KEY（可选）、SEND_TO_ALL（welcome_email 用）
+ANTHROPIC_API_KEY、TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID（Reuters 登录态过期告警用,见「Windows 常开机器」一节;Windows 上走本机 `.env`,不是系统环境变量）、GMAIL_USER、GMAIL_APP_PASSWORD、GETTY_API_KEY（可选）、SUPABASE_URL / SUPABASE_SERVICE_KEY（可选）、SEND_TO_ALL（welcome_email 用）
 
 GitHub Actions secrets 与上述同名。
 
@@ -143,7 +147,7 @@ EU AV 自动下载仅本机运行（检测 `GITHUB_ACTIONS` env 跳过），下�
   - 新增源时先确认标题字段是否被截断、人名位置，避免重蹈
 - **Imago 绝不拿搜索词当标题(2026-10 修)**:原 `title = alt or query`——缩略图未渲染、alt 为空时标题变成 "Stephane Sejourne",`is_relevant` 必然放行;而不带重音的搜索在 Imago 是模糊匹配、会搜出别的 Stéphane → 推送「3 张新图」点进去(带重音搜索页)却什么都没有。现在 alt 为空就留空,被过滤、不进 seen,下次重判。同时去掉了 scraper 里大小写/重音敏感的 query 关键词预过滤,统一交给 `is_relevant`(同时认 `séjourné` / `sejourne`)。`process()` 现会把每条推送的标题+链接记进日志(`+ …`),查可疑提醒先看这个
 - **单次抓取上限**：Getty / EP Multimedia 取前 60 条（原为 20）。大活动日（贸易展、全会）单天 30-50+ 张，3 小时跑一次时排在前 20 之后的会被挤掉漏掉。Getty 搜索页一次渲染约 60 张缩略图，故 60 有效；再多需翻页
-- **Reuters Connect 必须登录（仅 Mac 本机跑）**：未登录访问搜索会被转到 `/login`，登录又有设备验证、只能人手过。所以 `photo_library_monitor.py` 复用一个持久浏览器资料夹 `~/.reuters_connect_profile`（优先用本机真 Google Chrome，去掉自动化标记），由 **`python3 reuters_login.py`** 手动登录一次存下会话。搜索地址是登录后的 `/app/feed/pictures?query=<人名>`（旧的 `/search?searchTerm=` 未登录可用、登录后会被带回首页），图片链接格式 `/app/item/...`。卡片标题是通讯社 slug(如 `FRANCE-NOUMEA-POLITICAL-MEETING`)、多数不含人名,所以同 Getty 一样**信任搜索、加 `confirmed_match`**。排序「Newest First」存在账号偏好里、不在 URL 上。GitHub Actions 上没有这个资料夹 → 自动跳过此源。日志出现 `LOGIN EXPIRED` 就重跑 `reuters_login.py`；跑 `reuters_login.py` 时别同时跑监控（同一资料夹会被锁）
+- **Reuters Connect 必须登录（仅 Mac 本机跑）**：未登录访问搜索会被转到 `/login`，登录又有设备验证、只能人手过。所以 `photo_library_monitor.py` 复用一个持久浏览器资料夹 `~/.reuters_connect_profile`（优先用本机真 Google Chrome，去掉自动化标记），由 **`python3 reuters_login.py`** 手动登录一次存下会话。搜索地址是登录后的 `/app/feed/pictures?query=<人名>`（旧的 `/search?searchTerm=` 未登录可用、登录后会被带回首页），图片链接格式 `/app/item/...`。卡片标题是通讯社 slug(如 `FRANCE-NOUMEA-POLITICAL-MEETING`)、多数不含人名,所以同 Getty 一样**信任搜索、加 `confirmed_match`**。排序「Newest First」存在账号偏好里、不在 URL 上。GitHub Actions 上没有这个资料夹 → 自动跳过此源。日志出现 `LOGIN EXPIRED` 就重跑 `reuters_login.py`；跑 `reuters_login.py` 时别同时跑监控（同一资料夹会被锁）。**2026-11 起这个不用自己盯日志了**:`scripts/run_photo_library_monitor_mac_only.py` 会扫监控输出里的 `LOGIN EXPIRED`,命中就推一条 Telegram 提醒(`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`),用本机 `.reuters_login_expired_alerted` 标记文件去重——没修好之前不会每 3 小时重复提醒,登录修好后自动解除,下次再过期还会再提醒
 - **Shutterstock 只搜 Editorial 库、仅本机跑**（`/fr/editorial/search/<slug>?sort=date&person=<id>`,人物 id:Attal `85506`、Séjourné `110070`,URL 写在 `PERSONS[...]['search_urls']`,每人只抓一次;**排序参数是 `sort=date`,写成 `sort=newest` 直接 400**;新闻图不在主图库搜索里;详情页链接形如 `/fr/editorial/image-editorial/<slug>-17210815ad`,末段为图片 id）。Akamai 封数据中心 IP（云端沙箱/GitHub Actions 直接 403），所以检测到 `GITHUB_ACTIONS` 就跳过，只在 Mac launchd `--mac-only` 那一路跑。alt/URL slug 都是截断图说 → 同 Getty 用 `confirmed_match`。被拦时记 warning 返回空、不报错。2026-09 写好但没合并过,2026-10 移植进来
 - **EP Multimedia 用 photoset 级别、不用单张 photo（重要，2026-07 修）**：search JSON 里 `results.photos.content` 是单张照片，其 `mediaBusinessId`（如 `20260707_EP-208082A_VZ1_EG_0083`）**不是**合法的 `/photoset/` 地址（点开 404），且一场活动含几十张 → 旧代码既发死链又对同一活动刷几十条通知。改读 `results.photosets.content`（相册级，`mediaBusinessId` 形如 `EP-208082A`），URL 拼 `/en/photoset/{标题slug}_{相册id}`。slug = 小写、去重音、去撇号（`EU's`→`eus`）、其余非字母数字压成单 `-`（见 `_ep_slug`，已对 18 条实测全中）。**search 只按 `orderBy=newest` 返回最新 ~18 个相册、不分年份（能回溯到 14 个月前）**，故用 `EP_NOTIFY_DAYS`（14 天）过滤:超窗的老相册**静默塞进 seen 不推**（同日历「旧 backlog 静默入库」），只对窗内新相册推。去重 id 从单张换到相册级——若不加日期窗,换 id 那次首跑会把全部 18 个（含 2025 的）当新的全推一遍
 - **Council Newsroom（欧盟理事会图库，2026-11 加）**：前端 `newsroom.consilium.europa.eu` 是 Angular SPA，数据走公开 JSON 接口 `https://newsroomapi.consilium.europa.eu/api/photos?pagesize=100&page=1&keywords=<词>&orderBy=date&orderDirection=descending`，requests 直接拿、不用浏览器。**关键词不认重音**：`Séjourné` 返回 0 条、`Sejourne` 才行 → 每人一个专用 `consilium_query`，每人只查一次。接口返回单张照片，一场会（Roundtable / Bilateral / Press conference）是一个 gallery、几十张 → 同 EP 按 `galleryId` 去重，一个 gallery 推一次；每张照片的 caption+tags 再过一遍 `is_relevant`（caption 人名全大写如 `Stéphane SEJOURNE`，小写后命中 `sejourne`）。链接 = `/events/{linkedEvent.urlName}/{galleryUrlSegment}/{uniqueId}`（前端 bundle 里就这么拼，实测可打开）。搜索会返回多年历史 → 超过 `EP_NOTIFY_DAYS`（14 天）的 gallery 静默入库，首跑不刷屏。同一 gallery 后续追加照片不会再推。

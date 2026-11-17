@@ -23,10 +23,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from _env import load_dotenv
+
 REPO_ROOT      = Path(__file__).resolve().parent.parent
 MONITOR_SCRIPT = REPO_ROOT / "sejourn_photo_monitor.py"
 STATE_FILE     = REPO_ROOT / "photo_sync_state.json"
 HEARTBEAT_FILE = REPO_ROOT / "sejourn_photo_monitor.heartbeat.json"
+
+load_dotenv(REPO_ROOT / ".env")
 
 DEFAULT_THRESHOLD_MIN = 100  # > one missed run on an hourly schedule, < two
 
