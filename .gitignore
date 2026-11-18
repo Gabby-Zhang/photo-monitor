@@ -2,12 +2,10 @@ __pycache__/
 *.pyc
 *.log
 
-# Local-only dedup state (Reuters/Shutterstock on the Windows PC; separate
-# from GitHub Actions' cached photo_library_seen.json). Do NOT add
-# photo_sync_state.json / sejourn_photo_monitor.heartbeat.json here — those
-# are intentionally git-tracked so the Windows PC and the cloud-fallback
-# workflow share the same EU AV monitor state (see CLAUDE.md).
+# Dedup state — all cache-based (GitHub Actions actions/cache) or
+# local-machine-only, never git-tracked. See CLAUDE.md.
 photo_library_seen.json
+photo_sync_state.json
 .reuters_login_expired_alerted
 
 # Secrets for the Windows wrapper scripts (TELEGRAM_BOT_TOKEN, SUPABASE_*, ...)

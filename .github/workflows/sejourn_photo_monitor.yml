@@ -1,18 +1,18 @@
-name: Séjourné EU AV Monitor (cloud fallback)
+name: Séjourné EU AV Monitor
 
-# Primary runner for this monitor is now a Windows PC (Task Scheduler), which
-# can stay on 24/7 and refreshes sejourn_photo_monitor.heartbeat.json on every
-# successful run. This workflow only takes over when that heartbeat goes
-# stale (PC off/asleep/disconnected) — see scripts/run_sejourn_photo_monitor.py
-# and CLAUDE.md ("EU AV 监控：Windows 常驻 + 云端兜底").
+# Cloud-only (no Windows PC involved — sejourn_photo_monitor.py is plain
+# HTTP, no login/browser needed, so it just stays on GitHub Actions like
+# the rest of photo_library_monitor.py). High-frequency during UK waking
+# hours, lower overnight. See CLAUDE.md ("EU AV 监控：云端专属、高频轮询").
 
 on:
   schedule:
-    - cron: '7 * * * *'   # hourly, :07 past the hour — no browser needed, cheap to run every time
+    # Times are UTC. UK 07:00-20:00 = 07:00-20:00 UTC in winter (GMT); shift
+    # both blocks 1h earlier (06:00-19:00 UTC day / 19-23,0-5 night) once UK
+    # clocks go to BST (last Sunday in March) — and back again in October.
+    - cron: '*/10 7-19 * * *'       # UK daytime, every 10 min
+    - cron: '0 0-6,20-23 * * *'     # UK nighttime, hourly
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 concurrency:
   group: sejourn-photo-monitor
@@ -35,8 +35,19 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Run monitor if the Windows PC's heartbeat is stale
-        run: |
-          git config user.email "automation@sa-archive.local"
-          git config user.name "photo-monitor-bot"
-          python3 scripts/run_sejourn_photo_monitor.py --role cloud --threshold-minutes 100
+      - name: Restore dedup state cache
+        uses: actions/cache@v4
+        with:
+          path: photo_sync_state.json
+          key: sejourn-av-state-${{ github.run_id }}
+          restore-keys: sejourn-av-state-
+
+      - name: Run monitor
+        run: python3 sejourn_photo_monitor.py
+
+      - name: Save dedup state cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: photo_sync_state.json
+          key: sejourn-av-state-${{ github.run_id }}
