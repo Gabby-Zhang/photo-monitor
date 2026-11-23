@@ -953,7 +953,7 @@ def scrape_getty_api(query: str) -> list[dict]:
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
 
-async def run_checks(dry_run: bool, init_mode: bool, mac_only: bool = False):
+async def run_checks(dry_run: bool, init_mode: bool, mac_only: bool = False, eu_only: bool = False):
     seen = load_seen()
     total_new = 0
 
@@ -1032,28 +1032,34 @@ async def run_checks(dry_run: bool, init_mode: bool, mac_only: bool = False):
                 if mac_only:
                     continue
 
-                # -- Getty (Playwright + Stealth) --
-                getty_results = await scrape_getty(page, query)
-                log.info(f"  Getty Images: {len(getty_results)} result(s)")
-                process(getty_results, "Getty Images")
-                await asyncio.sleep(3)
+                # --eu-only (the extra 20-min ticks on plenary days, see
+                # scripts/photo_monitor_gate.py): skip the commercial libraries
+                # — they keep the normal hourly/3-hourly cadence so Getty/Imago's
+                # bot walls aren't hit every 20 min — and check only the EU
+                # sources below (EU AV, EP Multimedia, Council).
+                if not eu_only:
+                    # -- Getty (Playwright + Stealth) --
+                    getty_results = await scrape_getty(page, query)
+                    log.info(f"  Getty Images: {len(getty_results)} result(s)")
+                    process(getty_results, "Getty Images")
+                    await asyncio.sleep(3)
 
-                # -- Imago (Playwright) --
-                imago_results = await scrape_imago(page, query)
-                log.info(f"  Imago: {len(imago_results)} result(s)")
-                process(imago_results, "Imago Images")
-                await asyncio.sleep(3)
+                    # -- Imago (Playwright) --
+                    imago_results = await scrape_imago(page, query)
+                    log.info(f"  Imago: {len(imago_results)} result(s)")
+                    process(imago_results, "Imago Images")
+                    await asyncio.sleep(3)
 
-                # -- Alamy (Playwright, may be rate-limited) --
-                alamy_results = scrape_alamy(query)
-                log.info(f"  Alamy: {len(alamy_results)} result(s)")
-                process(alamy_results, "Alamy")
-                await asyncio.sleep(3)
+                    # -- Alamy (Playwright, may be rate-limited) --
+                    alamy_results = scrape_alamy(query)
+                    log.info(f"  Alamy: {len(alamy_results)} result(s)")
+                    process(alamy_results, "Alamy")
+                    await asyncio.sleep(3)
 
-                # -- Flickr (RSS, no browser) --
-                flickr_results = scrape_flickr_reneweurope(query)
-                log.info(f"  Flickr RenewEurope: {len(flickr_results)} result(s)")
-                process(flickr_results, "Flickr RenewEurope")
+                    # -- Flickr (RSS, no browser) --
+                    flickr_results = scrape_flickr_reneweurope(query)
+                    log.info(f"  Flickr RenewEurope: {len(flickr_results)} result(s)")
+                    process(flickr_results, "Flickr RenewEurope")
 
                 # -- EU Audiovisual (Séjourné only, no browser needed) --
                 # API already filters by name — skip title filter here
@@ -1191,7 +1197,7 @@ async def run_checks(dry_run: bool, init_mode: bool, mac_only: bool = False):
                         log.info(f"  Council Newsroom: {cons_seeded} old gallery(ies) seeded silently (backlog)")
 
                 # -- Getty API (optional) --
-                if GETTY_API_KEY:
+                if GETTY_API_KEY and not eu_only:
                     getty_api_results = scrape_getty_api(query)
                     log.info(f"  Getty API: {len(getty_api_results)} result(s)")
                     process(getty_api_results, "Getty Images")
@@ -1224,6 +1230,9 @@ def main():
     parser.add_argument("--mac-only", "--reuters-only", dest="mac_only", action="store_true",
                         help="Only check the Mac-only sources: Reuters Connect + Shutterstock "
                              "(Mac launchd; CI covers the rest)")
+    parser.add_argument("--eu-only", action="store_true",
+                        help="Only the EU sources (EU AV, EP Multimedia, Council); "
+                             "used for the extra 20-min ticks on plenary days")
     args = parser.parse_args()
 
     if args.init:
@@ -1233,7 +1242,8 @@ def main():
     else:
         log.info("=== Photo Library Monitor ===")
 
-    asyncio.run(run_checks(dry_run=args.dry_run, init_mode=args.init, mac_only=args.mac_only))
+    asyncio.run(run_checks(dry_run=args.dry_run, init_mode=args.init, mac_only=args.mac_only,
+                           eu_only=args.eu_only))
 
 
 if __name__ == "__main__":

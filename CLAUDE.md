@@ -40,7 +40,7 @@ ICS 的 UID 用 `md5(date|title)` **确定性**生成（不能用 `hash()`，Pyt
 ## 定时运行
 
 > **2026-11-23 起主力触发 = cron-job.org**(同 sejourn-calendar / sa-archive 的做法)。GitHub 自带 `schedule` 实测大量丢跑:11/23 斯特拉斯堡全会日,`photo_monitor.yml` 配了每 20 分钟、全天只跑 4 次;`sejourn_photo_monitor.yml` 配了 ~90 次、只跑 3 次。下面写的 cron 现在只是松散兜底。
-> - **`photo_monitor.yml`**:cron-job.org **每 20 分钟**打 `workflow_dispatch`,body `{"ref":"main","inputs":{"tick":"true"}}`。第一步 `scripts/photo_monitor_gate.py` 按**巴黎时间**决定这次跑不跑:全会日(`PLENARY_WEEKS_2026`,周一–周四)08–20 点每次都跑;工作日 09–18 点每小时(每小时第一个 tick);其余每 3 小时。**不用再随冬夏令时改 cron**;全会日期**每年在 gate 脚本里更新**。不带 `tick` 的手动触发一律照跑
+> - **`photo_monitor.yml`**:cron-job.org **每 20 分钟**打 `workflow_dispatch`,body `{"ref":"main","inputs":{"tick":"true"}}`。第一步 `scripts/photo_monitor_gate.py` 按**巴黎时间**决定这次跑不跑、跑哪些源:全会日(`PLENARY_WEEKS_2026`,周一–周四)08–20 点每次都跑,但**只有每小时第一个 tick 全扫,其余 tick 用 `--eu-only` 只扫欧盟源**(EU AV / EP Multimedia / Council)——Getty / Imago / Alamy / Flickr 保持每小时,别每 20 分钟撞它们的反爬(用户要求:全会照片本来就来自欧盟源);工作日 09–18 点每小时全扫;其余每 3 小时全扫。**不用再随冬夏令时改 cron**;全会日期**每年在 gate 脚本里更新**。不带 `tick` 的手动触发一律照跑
 > - **`sejourn_photo_monitor.yml`**:cron-job.org **每 10 分钟**打 `workflow_dispatch`(`{"ref":"main"}`),无 gate
 > - 两个监控的新图都写 Supabase `photo_alerts` → sa-archive `telegram_push.yml` 每 30 分钟推 Telegram。EP Multimedia 以前只发 ntfy、不写表,全会照片从没进过 Telegram(11/23 修);`sejourn_photo_monitor.py` 写表的 id 与 `_eu_av_id(base_ref)` 相同,两边抓到同一组图只推一次,封面换了也不重推
 
