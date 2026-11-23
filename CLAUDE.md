@@ -45,6 +45,7 @@ ICS 的 UID 用 `md5(date|title)` **确定性**生成（不能用 `hash()`，Pyt
 > - 两个监控的新图都写 Supabase `photo_alerts` → sa-archive `telegram_push.yml` 每 30 分钟推 Telegram。EP Multimedia 以前只发 ntfy、不写表,全会照片从没进过 Telegram(11/23 修);`sejourn_photo_monitor.py` 写表的 id 与 `_eu_av_id(base_ref)` 相同,两边抓到同一组图只推一次,封面换了也不重推
 
 - **GitHub Actions `photo_monitor.yml`** → `photo_library_monitor.py`，工作日 9:00–18:00 巴黎时间每小时一次，其余时段每 3 小时一次；支持 `init_mode` 手动触发。cron 写的是 UTC，按巴黎夏令时(CEST=UTC+2)映射(07:00–16:00 UTC)；冬令时(CET=UTC+1)会整体偏移一小时，需手动调
+  - ~~GitHub schedule 里的全会周 `*/20` 条目~~ **2026-11-24 删除**,加频改由 cron-job.org + gate 负责(只扫欧盟源);以下为历史说明
   - **斯特拉斯堡 EP 全会周加频**：全会那 4 天(周一–周四)白天时段提频到**每 20 分钟一次**(07:00–18:00 UTC ≈ 巴黎 09:00–20:00)——大全会日单天 30-50+ 张,60 条上限会漏。用 `day-of-month + month` 精确命中会期(cron 无年份字段,写死的是 **2026** 日期,每年会漂移约一周,需按官方 EP 日历手动更新)。2026 会期:1/19-22、2/9-12、3/9-12、4/27-30、5/18-21、6/15-18、7/6-9、9/14-17、10/5-8、10/19-22、11/23-26、12/14-17(已过的月份 cron 仍留着,明年复用前记得改)。加频后每逢整点 hourly 与 30min 两个 schedule 会撞,靠 workflow 顶部 `concurrency: {group: photo-monitor, cancel-in-progress: false}` 串行化,避免两个 worker 同读 seen.json 各推一遍(cache 按 run_id 存)
 - **GitHub Actions `sejourn_photo_monitor.yml`** → `sejourn_photo_monitor.py`(EU AV 监控),纯云端,**不在 Windows/Mac 跑**,详见下一节
 - **GitHub Actions `welcome_email.yml`** → `welcome_email.py`，`subscribers.json` 有 push 时自动触发
