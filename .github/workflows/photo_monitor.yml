@@ -13,18 +13,9 @@ on:
     - cron: '0 7-16 * * 1-5'       # hourly, 09:00-18:00 Paris, Mon-Fri
     - cron: '0 0,3,6,18,21 * * 1-5' # every 3h outside that window, Mon-Fri
     - cron: '0 */3 * * 0,6'        # every 3h all day, Sat & Sun
-    # ── Strasbourg EP plenary weeks: ramp to every 20 min, daytime 07:00-18:00 UTC ──
-    # (09:00-20:00 Paris CEST / 08:00-19:00 CET). day-of-month + month target the
-    # exact 4-day part-sessions (Mon-Thu). Big plenary days produce 30-50+ photos
-    # and the 60-item cap drops the rest on an hourly cadence — see CLAUDE.md.
-    # NOTE: cron has no year field; these are 2026 dates and shift ~a week each
-    # year — update annually from the official EP calendar.
-    - cron: '*/20 7-18 6-9 7 *'    # Jul 6-9
-    - cron: '*/20 7-18 14-17 9 *'  # Sep 14-17
-    - cron: '*/20 7-18 5-8 10 *'   # Oct 5-8
-    - cron: '*/20 7-18 19-22 10 *' # Oct 19-22
-    - cron: '*/20 7-18 23-26 11 *' # Nov 23-26
-    - cron: '*/20 7-18 14-17 12 *' # Dec 14-17
+    # Plenary-week 20-min ramp-up moved to cron-job.org + scripts/photo_monitor_gate.py
+    # (EU sources only on the extra ticks). Don't re-add */20 lines here: they'd
+    # run full scans, Getty/Imago included, every 20 min.
   workflow_dispatch:          # allow manual trigger from GitHub UI
     inputs:
       init_mode:
@@ -60,7 +51,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$TICK" = "true" ]; then
             python3 scripts/photo_monitor_gate.py
           else
-            echo "run=true" | tee -a "$GITHUB_OUTPUT"
+            printf 'run=true\nmode=full\n' | tee -a "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Python
@@ -90,11 +81,14 @@ jobs:
           DISPLAY: ':99'
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          MODE: ${{ steps.gate.outputs.mode }}
         run: |
           Xvfb :99 -screen 0 1280x900x24 &
           sleep 2
           if [ "${{ github.event.inputs.init_mode }}" = "true" ]; then
             python3 photo_library_monitor.py --init
+          elif [ "$MODE" = "eu" ]; then
+            python3 photo_library_monitor.py --eu-only   # plenary extra tick: EU sources only
           else
             python3 photo_library_monitor.py
           fi
