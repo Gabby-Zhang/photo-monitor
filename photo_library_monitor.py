@@ -1151,6 +1151,11 @@ async def run_checks(dry_run: bool, init_mode: bool, mac_only: bool = False):
                             pass  # missing/bad date → treat as recent, err on notifying
                         if not init_mode and recent:
                             notify_direct(person, "EP Multimedia", item["title"], item["url"], dry_run)
+                            # Also into photo_alerts → sa-archive's Telegram push
+                            # (EP used to be ntfy-only, so plenary photos never
+                            # reached Telegram).
+                            if not dry_run:
+                                _push_alert(person, "EP Multimedia", item)
                             total_new += 1
                         elif not recent:
                             ep_seeded += 1

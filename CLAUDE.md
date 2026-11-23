@@ -11,8 +11,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 脚本 | 功能 | 通知渠道 |
 |---|---|---|
 | ~~`news_monitor.py`~~ | **已搬到独立仓库** `~/Documents/GitHub/ssga-news-monitor`(Sonnet,纯邮件,见该仓库 CLAUDE.md);本目录不再有此脚本 | — |
-| `sejourn_photo_monitor.py` | 监控 EU Audiovisual Service 的 SS REPORTAGE / PHOTO / VIDEO（每类各取最新 100 条，客户端过滤），推 Markdown 日志到 GitHub | ntfy `ss-calendar-update` |
-| `photo_library_monitor.py` | 监控图库新照片：Imago、Alamy（JSON API）、Flickr RenewEurope（RSS）、Getty（Playwright+stealth）、Reuters Connect（需登录，仅本机，见下文）、Shutterstock Editorial（仅本机，见下文）、EU AV（两轮扫描，见下文）、EP Multimedia（Playwright）、理事会 Council Newsroom（JSON API，见下文） | ntfy `photo-alert-gabriel` / `photo-alert-stephane` |
+| `sejourn_photo_monitor.py` | 监控 EU Audiovisual Service 的 SS REPORTAGE / PHOTO / VIDEO（每类各取最新 100 条，客户端过滤），推 Markdown 日志到 GitHub | ntfy `ss-calendar-update` + Supabase `photo_alerts`(→ Telegram) |
+| `photo_library_monitor.py` | 监控图库新照片：Imago、Alamy（JSON API）、Flickr RenewEurope（RSS）、Getty（Playwright+stealth）、Reuters Connect（需登录，仅本机，见下文）、Shutterstock Editorial（仅本机，见下文）、EU AV（两轮扫描，见下文）、EP Multimedia（Playwright）、理事会 Council Newsroom（JSON API，见下文） | ntfy `photo-alert-gabriel` / `photo-alert-stephane` + Supabase `photo_alerts`(→ Telegram) |
 | `sejourn_calendar_sync.py` | 抓 SS 的欧盟委员会官方日程,写入 Apple 日历,推送 ICS 到 GitHub | ntfy |
 | `welcome_email.py` | 给 subscribers.json 里的订阅者发欢迎邮件 | Gmail |
 | `french_polls/` | 2027 大选民调:scrapers/(elabe、ifop、opinionway、wikipedia)→ polls.db → visualizer.py 出趋势图 | — |
@@ -38,6 +38,11 @@ ICS 的 UID 用 `md5(date|title)` **确定性**生成（不能用 `hash()`，Pyt
 手机 webcal 订阅链接：`webcal://raw.githubusercontent.com/Gabby-Zhang/sejourn-calendar/main/sejourn.ics`
 
 ## 定时运行
+
+> **2026-11-23 起主力触发 = cron-job.org**(同 sejourn-calendar / sa-archive 的做法)。GitHub 自带 `schedule` 实测大量丢跑:11/23 斯特拉斯堡全会日,`photo_monitor.yml` 配了每 20 分钟、全天只跑 4 次;`sejourn_photo_monitor.yml` 配了 ~90 次、只跑 3 次。下面写的 cron 现在只是松散兜底。
+> - **`photo_monitor.yml`**:cron-job.org **每 20 分钟**打 `workflow_dispatch`,body `{"ref":"main","inputs":{"tick":"true"}}`。第一步 `scripts/photo_monitor_gate.py` 按**巴黎时间**决定这次跑不跑:全会日(`PLENARY_WEEKS_2026`,周一–周四)08–20 点每次都跑;工作日 09–18 点每小时(每小时第一个 tick);其余每 3 小时。**不用再随冬夏令时改 cron**;全会日期**每年在 gate 脚本里更新**。不带 `tick` 的手动触发一律照跑
+> - **`sejourn_photo_monitor.yml`**:cron-job.org **每 10 分钟**打 `workflow_dispatch`(`{"ref":"main"}`),无 gate
+> - 两个监控的新图都写 Supabase `photo_alerts` → sa-archive `telegram_push.yml` 每 30 分钟推 Telegram。EP Multimedia 以前只发 ntfy、不写表,全会照片从没进过 Telegram(11/23 修);`sejourn_photo_monitor.py` 写表的 id 与 `_eu_av_id(base_ref)` 相同,两边抓到同一组图只推一次,封面换了也不重推
 
 - **GitHub Actions `photo_monitor.yml`** → `photo_library_monitor.py`，工作日 9:00–18:00 巴黎时间每小时一次，其余时段每 3 小时一次；支持 `init_mode` 手动触发。cron 写的是 UTC，按巴黎夏令时(CEST=UTC+2)映射(07:00–16:00 UTC)；冬令时(CET=UTC+1)会整体偏移一小时，需手动调
   - **斯特拉斯堡 EP 全会周加频**：全会那 4 天(周一–周四)白天时段提频到**每 20 分钟一次**(07:00–18:00 UTC ≈ 巴黎 09:00–20:00)——大全会日单天 30-50+ 张,60 条上限会漏。用 `day-of-month + month` 精确命中会期(cron 无年份字段,写死的是 **2026** 日期,每年会漂移约一周,需按官方 EP 日历手动更新)。2026 会期:1/19-22、2/9-12、3/9-12、4/27-30、5/18-21、6/15-18、7/6-9、9/14-17、10/5-8、10/19-22、11/23-26、12/14-17(已过的月份 cron 仍留着,明年复用前记得改)。加频后每逢整点 hourly 与 30min 两个 schedule 会撞,靠 workflow 顶部 `concurrency: {group: photo-monitor, cancel-in-progress: false}` 串行化,避免两个 worker 同读 seen.json 各推一遍(cache 按 run_id 存)

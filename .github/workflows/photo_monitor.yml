@@ -1,5 +1,12 @@
 name: Photo Library Monitor
 
+# Main trigger: cron-job.org → workflow_dispatch with tick=true every 20 min.
+# The gate step (scripts/photo_monitor_gate.py) decides in Paris time whether
+# a tick actually runs: every 20 min on Strasbourg plenary days, hourly on
+# weekday office hours, every 3h otherwise. GitHub's own `schedule` below is
+# only a loose fallback — on 23/11/2026 it fired 4 times on a plenary day
+# configured for every 20 min. A manual dispatch (tick empty) always runs.
+
 on:
   schedule:
     # Times are UTC. Paris summer time (CEST) = UTC+2, so 09:00-18:00 Paris = 07:00-16:00 UTC.
@@ -24,6 +31,10 @@ on:
         description: 'Run in init mode (seed cache, no notifications)'
         required: false
         default: 'false'
+      tick:
+        description: 'Set by cron-job.org: let the gate decide whether to run'
+        required: false
+        default: ''
 
 # During plenary weeks the hourly and every-30-min schedules collide at :00.
 # Serialize runs so two workers don't both read the same seen.json and each
@@ -41,18 +52,32 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Gate (cron-job.org ticks)
+        id: gate
+        env:
+          TICK: ${{ github.event.inputs.tick }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$TICK" = "true" ]; then
+            python3 scripts/photo_monitor_gate.py
+          else
+            echo "run=true" | tee -a "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
         run: |
           pip install playwright playwright-stealth feedparser requests supabase
           playwright install chromium
           playwright install-deps chromium
 
       - name: Restore seen-items cache
+        if: steps.gate.outputs.run == 'true'
         uses: actions/cache@v4
         with:
           path: photo_library_seen.json
@@ -60,6 +85,7 @@ jobs:
           restore-keys: seen-items-
 
       - name: Run monitor (with virtual display)
+        if: steps.gate.outputs.run == 'true'
         env:
           DISPLAY: ':99'
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -75,7 +101,7 @@ jobs:
 
       - name: Save seen-items
         uses: actions/cache/save@v4
-        if: always()
+        if: always() && steps.gate.outputs.run == 'true'
         with:
           path: photo_library_seen.json
           key: seen-items-${{ github.run_id }}
