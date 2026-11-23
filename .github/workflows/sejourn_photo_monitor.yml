@@ -5,6 +5,9 @@ name: Séjourné EU AV Monitor
 # the rest of photo_library_monitor.py). High-frequency during UK waking
 # hours, lower overnight. See CLAUDE.md ("EU AV 监控：云端专属、高频轮询").
 
+# Main trigger: cron-job.org → workflow_dispatch every 10 min. GitHub's own
+# `schedule` below is only a loose fallback (23/11/2026: 3 runs all day
+# against ~90 configured).
 on:
   schedule:
     # Times are UTC. UK 07:00-20:00 = 07:00-20:00 UTC in winter (GMT); shift
@@ -43,6 +46,10 @@ jobs:
           restore-keys: sejourn-av-state-
 
       - name: Run monitor
+        env:
+          # new items also go to Supabase photo_alerts → sa-archive Telegram push
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python3 sejourn_photo_monitor.py
 
       - name: Save dedup state cache

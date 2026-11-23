@@ -14,6 +14,7 @@ Usage:
 """
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -236,6 +237,47 @@ def push_to_github(markdown: str):
 
 # ── Notifications ──────────────────────────────────────────────────────────────
 
+def _alert_id(ref: str) -> str:
+    """Same id photo_library_monitor._eu_av_id() gives this event
+    (md5("eu_av|base|<base ref>")[:16]), so when both monitors catch the same
+    reportage the photo_alerts upsert collapses them and sa-archive's Telegram
+    push sends it once. Keyed on the base ref, so a cover-photo change
+    (/00-NN suffix) doesn't re-alert either."""
+    raw = f"eu_av|base|{base_ref(ref)}"
+    return hashlib.md5(raw.encode()).hexdigest()[:16]
+
+
+def push_alerts(new_items: list) -> None:
+    """Write new items to Supabase `photo_alerts`; sa-archive's telegram_push
+    reads that table every 30 min. Best effort: a failure only logs, ntfy is
+    the source of truth for retries."""
+    url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    if not url or not key:
+        print("   photo_alerts: SUPABASE_URL / SUPABASE_SERVICE_KEY not set — skipped")
+        return
+    rows, ids = [], set()
+    for p in new_items:
+        aid = _alert_id(p["ref"])
+        if aid in ids:            # REPORTAGE + its PHOTOs share a base ref
+            continue
+        ids.add(aid)
+        rows.append({"id": aid, "person": "Stéphane Séjourné",
+                     "source": "EU Audiovisual", "title": p["title"], "url": p["url"]})
+    try:
+        requests.post(
+            f"{url}/rest/v1/photo_alerts",
+            params={"on_conflict": "id"},
+            headers={"apikey": key, "Authorization": f"Bearer {key}",
+                     "Content-Type": "application/json",
+                     "Prefer": "resolution=merge-duplicates,return=minimal"},
+            json=rows, timeout=15,
+        ).raise_for_status()
+        print(f"   photo_alerts: wrote {len(rows)} row(s) ✅")
+    except Exception as e:
+        print(f"   photo_alerts write failed: {e}")
+
+
 def _osa_quote(s: str) -> str:
     """Escape a string for use inside an AppleScript "..." literal."""
     return s.replace("\\", "\\\\").replace('"', '\\"')
@@ -360,6 +402,7 @@ def main():
     if not send_notification(new_items):
         print("\n⚠️  Notification failed — state NOT saved, will retry next run")
         sys.exit(1)
+    push_alerts(new_items)
 
     state["seen"]      = seen
     state["all_items"] = all_items
