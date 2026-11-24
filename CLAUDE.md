@@ -139,7 +139,7 @@ EU AV 自动下载仅本机运行（检测 `GITHUB_ACTIONS` env 跳过），下�
 
 **EU AV 追加照片提醒**:欧委会会连续几天往同一组图里加照片,加的可能有他、也可能全是别人。对拍摄日期在 `EU_AV_TRACK_DAYS`(14 天)内的已匹配图片集,每次逐张扫 caption,把「caption 含他名字」的照片序号存到 `seen["_eu_av_photos"][base_ref]`;下次比对,**只有新增的照片里有他**才推「新增 N 张有他(第 x、y 张)」,别人的新图不推。本机运行时顺带下载新增的(已下载的文件会跳过)。第一次扫到某组图只建基线不推;扫描中任一请求失败 → 本次不比对(防止半截扫描下次被当成「新增」);不在结果里的 ref 自动清掉。
 
-**Renew Europe 群体活动（只通知不下载）**：`eu_av_terms` 含 `"renew europe"`，用于捕捉标题/摘要点名 Renew Europe 群组、但不含 Séjourné 本人名字的活动（如领导人会前会、欧理会前碰头，video 示例 `I-290823`）。这类只推通知，**不自动下载**：`run_checks` 里调 `eu_av_download_photos` 前会把 `"renew europe"` 从词表里剔除（`download_terms`），下载函数逐张扫 caption 找他名字，群体照片里没他名字自然下 0 张；他本人的照片照常下载。改 `eu_av_terms` 时注意保持这层「匹配词 ⊇ 下载词」的关系。
+**Renew Europe 群体活动（只通知不下载）**：`eu_av_terms` 含 `"renew europe"`，用于捕捉标题/摘要点名 Renew Europe 群组、但不含 Séjourné 本人名字的活动（如领导人会前会、欧理会前碰头，video 示例 `I-290823`）。这类只推通知，**不自动下载**：`run_checks` 里调 `eu_av_download_photos` 前会把 `"renew europe"` 从词表里剔除（`download_terms`），下载函数逐张扫 caption 找他名字，群体照片里没他名字自然下 0 张；他本人的照片照常下载。改 `eu_av_terms` 时注意保持这层「匹配词 ⊇ 下载词」的关系。只靠 `"renew europe"` 命中(标题/摘要没他名字、也没他的 person_id)的条目,标题前加 `RENEW_ONLY_PREFIX`「〔Renew 相关，未见他名字〕」再推(ntfy + `photo_alerts`→Telegram),一眼区分是党团活动(如 2026-11-24 Hayer 的全会周 press briefing `I-298009`)还是他本人的照片;若逐张 caption 扫到他名字则去掉前缀。
 
 ## 关键约定与已知坑
 

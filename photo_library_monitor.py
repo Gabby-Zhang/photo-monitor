@@ -530,6 +530,9 @@ def _eu_av_id(base_ref: str) -> str:
     return make_id("eu_av", f"base|{base_ref}")
 
 
+RENEW_ONLY_PREFIX = "〔Renew 相关，未见他名字〕"
+
+
 def scrape_eu_audiovisual(search_terms: list, person_id=None, photo_terms=None) -> list[dict]:
     """EU Audiovisual Service API — no browser needed.
 
@@ -593,6 +596,11 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None, photo_terms=None) 
 
                 url = f"{PORTAL_VIDEO}/{doc_ref}" if media_type == "VIDEO" else f"{PORTAL_PHOTO}/{doc_ref}"
                 title = clean_html(next(iter(titles.values()), ref))
+                # Matched only via "renew europe" (no name, no person tag): say so,
+                # e.g. Hayer's group press briefing (I-298009) — he isn't in it.
+                renew_only = not person_match and not any(t in combined for t in photo_terms)
+                if renew_only:
+                    title = RENEW_ONLY_PREFIX + title
                 results.append({
                     "id": _eu_av_id(doc_ref), "title": title, "url": url,
                     "eu_av_base_ref": doc_ref,
@@ -651,6 +659,9 @@ def scrape_eu_audiovisual(search_terms: list, person_id=None, photo_terms=None) 
                 captions_by_ref[base_ref] = captions
             item["eu_av_photos"] = sorted(
                 n for n, c in captions.items() if any(t in c for t in photo_terms))
+            # Captions name him after all → not "Renew only"
+            if item["eu_av_photos"] and item["title"].startswith(RENEW_ONLY_PREFIX):
+                item["title"] = item["title"][len(RENEW_ONLY_PREFIX):]
 
     except Exception as e:
         log.warning(f"EU AV error: {e}")
